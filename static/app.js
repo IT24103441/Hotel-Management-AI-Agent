@@ -4,6 +4,68 @@ const sendButton = document.querySelector("#send-button");
 const messages = document.querySelector("#messages");
 const welcome = document.querySelector("#welcome");
 const typing = document.querySelector("#typing");
+const availabilityCheckin = document.querySelector("#availability-checkin");
+const availabilityCheckout = document.querySelector("#availability-checkout");
+const availabilityList = document.querySelector("#availability-list");
+const availabilityNote = document.querySelector("#availability-note");
+
+function localDateString(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function setDefaultAvailabilityDates() {
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  availabilityCheckin.value = localDateString(today);
+  availabilityCheckout.value = localDateString(tomorrow);
+}
+
+async function refreshAvailability() {
+  const checkin = availabilityCheckin.value;
+  const checkout = availabilityCheckout.value;
+  if (!checkin || !checkout) return;
+
+  availabilityNote.textContent = "";
+  availabilityList.replaceChildren();
+  const loading = document.createElement("div");
+  loading.className = "availability-status";
+  loading.textContent = "Checking availability…";
+  availabilityList.append(loading);
+
+  try {
+    const query = new URLSearchParams({ checkin, checkout });
+    const response = await fetch(`/api/availability?${query}`);
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Couldn't check these dates.");
+
+    const roomTypes = [
+      ["Double · 1–199", "double"],
+      ["Triple · 200–299", "triple"],
+      ["Up to 6 guests · 300–500", "six_guest"],
+    ];
+    availabilityList.replaceChildren();
+    for (const [label, key] of roomTypes) {
+      const row = document.createElement("div");
+      row.className = "availability-row";
+      const name = document.createElement("span");
+      name.className = "availability-room-name";
+      name.textContent = label;
+      const count = document.createElement("span");
+      count.className = "availability-room-count";
+      count.textContent = `${result.available[key]} free`;
+      count.title = `${result.available[key]} rooms available out of ${result.totals[key]}`;
+      row.append(name, count);
+      availabilityList.append(row);
+    }
+  } catch (error) {
+    availabilityList.replaceChildren();
+    availabilityNote.textContent = error.message || "Couldn't check availability.";
+  }
+}
 
 function addMessage(role, content) {
   const item = document.createElement("article");
@@ -47,6 +109,7 @@ async function sendMessage(text) {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "The request failed.");
     for (const reply of result.replies || []) addMessage("assistant", reply);
+    refreshAvailability();
   } catch (error) {
     addMessage("assistant", error.message || "Something went wrong. Please try again.");
   } finally {
@@ -90,3 +153,8 @@ document.querySelector("#new-chat").addEventListener("click", async () => {
     addMessage("assistant", "Couldn't start a new conversation. Please try again.");
   }
 });
+
+availabilityCheckin.addEventListener("change", refreshAvailability);
+availabilityCheckout.addEventListener("change", refreshAvailability);
+setDefaultAvailabilityDates();
+refreshAvailability();

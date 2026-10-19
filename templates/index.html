@@ -23,6 +23,22 @@
       <button class="new-chat" id="new-chat" type="button">
         <span aria-hidden="true">＋</span> New conversation
       </button>
+
+      <section class="availability-card" aria-labelledby="availability-title">
+        <div class="availability-heading">
+          <h2 id="availability-title">Available rooms</h2>
+          <span class="availability-live" aria-hidden="true"></span>
+        </div>
+        <p class="availability-caption">Choose dates to see rooms available</p>
+        <div class="availability-dates">
+          <label>Check-in<input id="availability-checkin" type="date" aria-label="Availability check-in date"></label>
+          <label>Check-out<input id="availability-checkout" type="date" aria-label="Availability check-out date"></label>
+        </div>
+        <div class="availability-list" id="availability-list" aria-live="polite">
+          <div class="availability-status">Loading rooms…</div>
+        </div>
+        <div class="availability-note" id="availability-note"></div>
+      </section>
     </aside>
 
     <main class="main-panel">

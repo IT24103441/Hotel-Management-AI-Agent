@@ -24,6 +24,21 @@ button { cursor: pointer; }
 .new-chat { display: flex; align-items: center; gap: 9px; width: 100%; padding: 11px 12px; border: 1px solid #dedfe3; border-radius: 10px; color: #39404b; background: white; font-size: 12px; text-align: left; transition: background .15s, border-color .15s; }
 .new-chat:hover, .suggestions button:hover { background: #f0f4f9; border-color: #ccd5e0; }
 .new-chat span { font-size: 17px; line-height: 12px; }
+.availability-card { padding: 13px 12px 11px; border: 1px solid #e2e5e9; border-radius: 12px; background: #fff; }
+.availability-heading { display: flex; align-items: center; justify-content: space-between; }
+.availability-heading h2 { margin: 0; color: #333b46; font-size: 12px; font-weight: 700; }
+.availability-live { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.availability-caption { margin: 5px 0 12px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.availability-dates { display: grid; gap: 8px; }
+.availability-dates label { display: grid; gap: 4px; color: #727985; font-size: 9px; font-weight: 600; }
+.availability-dates input { width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid #e1e4e8; border-radius: 7px; color: #39404b; background: #fff; font: inherit; font-size: 10px; }
+.availability-list { display: grid; gap: 2px; margin-top: 11px; }
+.availability-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 1px; border-bottom: 1px solid #f0f1f3; }
+.availability-row:last-child { border-bottom: 0; }
+.availability-room-name { color: #555e6a; font-size: 10px; }
+.availability-room-count { color: #243b58; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.availability-status, .availability-note { color: #8a9099; font-size: 9px; line-height: 1.45; }
+.availability-note { margin-top: 5px; color: #a0443b; }
 .sidebar-label { margin-bottom: -16px; padding: 0 8px; color: #9399a2; font-size: 9px; font-weight: 700; letter-spacing: .12em; }
 .assistant-card { display: flex; align-items: center; gap: 10px; padding: 11px 9px; border: 1px solid #e6e8eb; border-radius: 10px; background: #fff; }
 .online-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 3px #e5f5ed; }
