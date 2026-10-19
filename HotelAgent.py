@@ -2,22 +2,25 @@
 Hotel Management AI Agent
 =========================
 A chat-based front-desk assistant that can add, view, update and delete
-customer records, using Claude's tool-calling (function calling) to decide
-which action to take. Data is stored permanently in MongoDB.
+customer records, using Ollama's tool-calling (function calling) to decide
+which action to take. Ollama runs locally by default; data is stored in SQLite.
 
 Run:
-    py -m pip install anthropic pymongo
-    set ANTHROPIC_API_KEY=sk-ant-...
+    py -m pip install -r requirements.txt
+    ollama pull qwen3
     python HotelAgent.py
+
+For Ollama Cloud, set OLLAMA_HOST=https://ollama.com, provide OLLAMA_API_KEY,
+and set OLLAMA_MODEL to a model available in your Ollama Cloud account.
 
 Maps to the project brief:
   FR1 Collect details   -> system prompt rules + validation errors returned to model
   FR2 Save               -> save_customer tool
   FR3 View                -> find_customer tool
   FR4 Update             -> update_customer tool
-  FR5 Delete (confirm)   -> model asks yes/no in chat BEFORE calling delete_customer
+  FR5 Delete (confirm)   -> application requires a clear yes before deleting
   FR6 Validation          -> validate_* functions, called inside every tool
-  FR7 Permanent storage  -> MongoDB (hotel_db.customers), survives restarts
+  FR7 Permanent storage  -> SQLite (hotel.db), survives restarts
   FR8 Honest replies      -> tools return real success/error, model must relay them
   FR9 Stay on topic       -> system prompt instructs the agent to redirect
 """
@@ -25,38 +28,73 @@ Maps to the project brief:
 import json
 import os
 import re
+import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 
 
-import anthropic
-from pymongo import MongoClient, ReturnDocument
+from ollama import Client
 
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://admin:1234@cluster0.xcmkrdn.mongodb.net/?appName=Cluster0")
-DB_NAME = "hotel_db"
-MODEL = "claude-sonnet-5"
+
+def load_local_env():
+    """Load simple KEY=value settings from .env without overriding the shell."""
+    if not os.path.exists(".env"):
+        return
+    try:
+        with open(".env", "r", encoding="utf-8") as env_file:
+            for line in env_file:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    except OSError:
+        pass
+
+
+load_local_env()
+DATABASE_PATH = os.getenv("DATABASE_PATH", "hotel.db")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+MODEL = os.getenv("OLLAMA_MODEL", "qwen3")
+_pending_delete = None
 
 # ---------------------------------------------------------------------------
-# 1. DATABASE (permanent storage - FR7)
+# 1. DATABASE (permanent local storage - FR7)
 # ---------------------------------------------------------------------------
 
-_mongo_client = None
-
+@contextmanager
 def get_db():
-    global _mongo_client
-    if _mongo_client is None:
-        _mongo_client = MongoClient(MONGO_URI)
-    return _mongo_client[DB_NAME]
+    db = sqlite3.connect(DATABASE_PATH)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
-def get_next_sequence_value(sequence_name="customer_id"):
-    db = get_db()
-    counter = db["counters"].find_one_and_update(
-        {"_id": sequence_name},
-        {"$inc": {"sequence_value": 1}},
-        upsert=True,
-        return_document=ReturnDocument.AFTER,
-    )
-    return counter["sequence_value"]
+def initialize_database():
+    with get_db() as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name TEXT NOT NULL,
+                phone TEXT NOT NULL,
+                email TEXT,
+                room_number TEXT NOT NULL,
+                checkin TEXT NOT NULL,
+                checkout TEXT NOT NULL,
+                special_requests TEXT
+            )
+        """)
+
+
+def row_to_dict(row):
+    return dict(row) if row is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -141,50 +179,42 @@ def tool_save_customer(full_name, phone, room_number, checkin, checkout,
     if errors:
         return {"success": False, "errors": errors}
 
-    db = get_db()
-    new_id = get_next_sequence_value("customer_id")
-    customer_doc = {
-        "id": new_id,
-        "full_name": full_name.strip(),
-        "phone": phone.strip(),
-        "email": (email or "").strip() or None,
-        "room_number": room_number.strip(),
-        "checkin": checkin.strip(),
-        "checkout": checkout.strip(),
-        "special_requests": (special_requests or "").strip() or None,
-    }
-    db["customers"].insert_one(customer_doc)
-    return {"success": True, "customer": doc_to_dict_by_id(new_id)}
+    with get_db() as db:
+        cursor = db.execute(
+            """INSERT INTO customers
+               (full_name, phone, email, room_number, checkin, checkout, special_requests)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (full_name.strip(), phone.strip(), (email or "").strip() or None,
+             room_number.strip(), checkin.strip(), checkout.strip(),
+             (special_requests or "").strip() or None),
+        )
+        customer = row_to_dict(db.execute(
+            "SELECT * FROM customers WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone())
+    return {"success": True, "customer": customer}
 
 
 def doc_to_dict_by_id(customer_id):
-    db = get_db()
     try:
         cid = int(customer_id)
     except (ValueError, TypeError):
         return None
-    doc = db["customers"].find_one({"id": cid})
-    if not doc:
-        return None
-    doc = dict(doc)
-    doc.pop("_id", None)
-    return doc
+    with get_db() as db:
+        return row_to_dict(db.execute(
+            "SELECT * FROM customers WHERE id = ?", (cid,)
+        ).fetchone())
 
 
 def tool_find_customer(query):
-    db = get_db()
     query_str = str(query).strip()
+    if not query_str:
+        return {"success": False, "errors": ["Enter a customer ID or name to search for."]}
     if query_str.isdigit():
-        docs = list(db["customers"].find({"id": int(query_str)}))
+        sql, params = "SELECT * FROM customers WHERE id = ?", (int(query_str),)
     else:
-        escaped_query = re.escape(query_str)
-        docs = list(db["customers"].find({"full_name": {"$regex": escaped_query, "$options": "i"}}))
-
-    matches = []
-    for d in docs:
-        item = dict(d)
-        item.pop("_id", None)
-        matches.append(item)
+        sql, params = "SELECT * FROM customers WHERE instr(lower(full_name), lower(?)) > 0 ORDER BY id", (query_str,)
+    with get_db() as db:
+        matches = [row_to_dict(row) for row in db.execute(sql, params).fetchall()]
 
     if not matches:
         return {"success": True, "matches": [], "message": "No customer found matching that."}
@@ -196,6 +226,8 @@ def tool_update_customer(customer_id, updates):
     if not existing:
         return {"success": False, "errors": [f"No customer with ID {customer_id} exists."]}
 
+    if not isinstance(updates, dict) or not updates:
+        return {"success": False, "errors": ["Provide at least one field to update."]}
     if "id" in updates or "customer_id" in updates or "_id" in updates:
         return {"success": False, "errors": ["The customer ID can never be changed."]}
 
@@ -212,9 +244,11 @@ def tool_update_customer(customer_id, updates):
     if errors:
         return {"success": False, "errors": errors}
 
-    db = get_db()
     clean_updates = {k: (v.strip() if isinstance(v, str) else v) for k, v in updates.items()}
-    db["customers"].update_one({"id": int(customer_id)}, {"$set": clean_updates})
+    columns = ", ".join(f"{key} = ?" for key in clean_updates)
+    values = list(clean_updates.values()) + [int(customer_id)]
+    with get_db() as db:
+        db.execute(f"UPDATE customers SET {columns} WHERE id = ?", values)
     return {
         "success": True,
         "changed_fields": updates,
@@ -223,22 +257,23 @@ def tool_update_customer(customer_id, updates):
 
 
 def tool_delete_customer(customer_id):
+    """Delete only after the chat loop has verified an explicit yes."""
     existing = doc_to_dict_by_id(customer_id)
     if not existing:
         return {"success": False, "errors": [f"No customer with ID {customer_id} exists."]}
-    db = get_db()
-    db["customers"].delete_one({"id": int(customer_id)})
+    try:
+        with get_db() as db:
+            db.execute("DELETE FROM customers WHERE id = ?", (int(customer_id),))
+    except sqlite3.Error as e:
+        return {"success": False, "errors": [f"The local database could not complete the deletion: {e}"]}
     return {"success": True, "deleted_customer": existing}
 
 
 def tool_list_customers():
-    db = get_db()
-    docs = list(db["customers"].find().sort("id", 1))
-    customers = []
-    for d in docs:
-        item = dict(d)
-        item.pop("_id", None)
-        customers.append(item)
+    with get_db() as db:
+        customers = [row_to_dict(row) for row in db.execute(
+            "SELECT * FROM customers ORDER BY id"
+        ).fetchall()]
     return {"success": True, "customers": customers}
 
 
@@ -251,70 +286,84 @@ TOOL_FUNCTIONS = {
 }
 
 # ---------------------------------------------------------------------------
-# 4. TOOL SCHEMAS (given to Claude)
+# 4. TOOL SCHEMAS (given to Ollama)
 # ---------------------------------------------------------------------------
 
 TOOLS = [
     {
-        "name": "save_customer",
-        "description": "Save a brand new customer record once ALL required details have been collected "
-                        "and look valid. Do not call this until you have full_name, phone, room_number, "
-                        "checkin and checkout. Never invent values for missing fields.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "full_name": {"type": "string"},
-                "phone": {"type": "string", "description": "9 to 15 digits, may start with +"},
-                "email": {"type": "string", "description": "optional"},
-                "room_number": {"type": "string", "description": "e.g. 204 or A12"},
-                "checkin": {"type": "string", "description": "YYYY-MM-DD"},
-                "checkout": {"type": "string", "description": "YYYY-MM-DD, after checkin"},
-                "special_requests": {"type": "string", "description": "optional free text"},
-            },
-            "required": ["full_name", "phone", "room_number", "checkin", "checkout"],
-        },
-    },
-    {
-        "name": "find_customer",
-        "description": "Look up existing customer(s) by numeric ID or by (partial) name.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-            "required": ["query"],
-        },
-    },
-    {
-        "name": "update_customer",
-        "description": "Update one or more fields of an existing customer. The customer ID itself "
-                        "can never be changed. Only include fields that are actually changing.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "customer_id": {"type": "integer"},
-                "updates": {
-                    "type": "object",
-                    "description": "Map of field name to new value, e.g. {\"room_number\": \"305\"}",
+        "type": "function",
+        "function": {
+            "name": "save_customer",
+            "description": "Save a brand new customer record once ALL required details have been collected "
+                            "and look valid. Do not call this until you have full_name, phone, room_number, "
+                            "checkin and checkout. Never invent values for missing fields.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "full_name": {"type": "string"},
+                    "phone": {"type": "string", "description": "9 to 15 digits, may start with +"},
+                    "email": {"type": "string", "description": "optional"},
+                    "room_number": {"type": "string", "description": "e.g. 204 or A12"},
+                    "checkin": {"type": "string", "description": "YYYY-MM-DD"},
+                    "checkout": {"type": "string", "description": "YYYY-MM-DD, after checkin"},
+                    "special_requests": {"type": "string", "description": "optional free text"},
                 },
+                "required": ["full_name", "phone", "room_number", "checkin", "checkout"],
             },
-            "required": ["customer_id", "updates"],
         },
     },
     {
-        "name": "delete_customer",
-        "description": "Permanently delete a customer record. IMPORTANT: only call this after you have "
-                        "already asked the staff member for explicit confirmation in plain chat "
-                        "('do you really want to delete...?') and they replied yes. If they reply no, "
-                        "do not call this tool at all.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"customer_id": {"type": "integer"}},
-            "required": ["customer_id"],
+        "type": "function",
+        "function": {
+            "name": "find_customer",
+            "description": "Look up existing customer(s) by numeric ID or by (partial) name.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
         },
     },
     {
-        "name": "list_customers",
-        "description": "List every customer currently stored (bonus feature).",
-        "input_schema": {"type": "object", "properties": {}},
+        "type": "function",
+        "function": {
+            "name": "update_customer",
+            "description": "Update one or more fields of an existing customer. The customer ID itself "
+                            "can never be changed. Only include fields that are actually changing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_id": {"type": "integer"},
+                    "updates": {
+                        "type": "object",
+                        "description": "Map of field name to new value, e.g. {\"room_number\": \"305\"}",
+                    },
+                },
+                "required": ["customer_id", "updates"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_customer",
+            "description": "Start deleting a customer record after the staff member requests deletion. "
+                            "The application will show the customer and require an explicit yes/no "
+                            "confirmation before it performs the deletion.",
+            "parameters": {
+                "type": "object",
+                "properties": {"customer_id": {"type": "integer"}},
+                "required": ["customer_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_customers",
+            "description": "List every customer currently stored (bonus feature).",
+            "parameters": {"type": "object", "properties": {}},
+        },
     },
 ]
 
@@ -332,9 +381,9 @@ the conversation.
 the staff member to correct it. Do not say something was saved/changed/deleted unless the tool \
 result says success: true.
 - For updates, clearly say what changed afterwards. The customer ID itself can never change.
-- For deletion: first show which customer you are about to delete and ask a clear yes/no \
-question in chat. Only call delete_customer after the staff member replies with something \
-affirmative like "yes". If they say "no", cancel and say so - do not call the tool.
+- For deletion: call delete_customer for the requested customer. The application will show \
+the customer and require the staff member's clear yes/no answer before deleting. Do not claim \
+the record was deleted unless the application confirms success.
 - If several customers match a search, list them briefly and ask which one is meant.
 - Keep replies polite, short and professional.
 - If asked about anything unrelated to customer records (e.g. room pricing, billing, general \
@@ -347,37 +396,52 @@ briefly say what you can help with.
 # ---------------------------------------------------------------------------
 
 def run_tool(name, tool_input):
+    global _pending_delete
     func = TOOL_FUNCTIONS.get(name)
     if not func:
         return {"success": False, "errors": [f"Unknown tool: {name}"]}
     try:
+        if name == "delete_customer":
+            customer_id = tool_input.get("customer_id")
+            customer = doc_to_dict_by_id(customer_id)
+            if not customer:
+                return {"success": False, "errors": [f"No customer with ID {customer_id} exists."]}
+            _pending_delete = customer
+            return {
+                "success": False,
+                "confirmation_required": True,
+                "customer": customer,
+                "message": "Waiting for the staff member's explicit yes or no.",
+            }
         return func(**tool_input)
     except TypeError as e:
         return {"success": False, "errors": [f"Bad arguments for {name}: {e}"]}
+    except sqlite3.Error as e:
+        return {"success": False, "errors": [f"The local database could not complete the request: {e}"]}
+    except Exception as e:
+        return {"success": False, "errors": [f"I couldn't complete that database action: {e}"]}
 
 
-def get_anthropic_api_key():
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key and os.path.exists(".env"):
-        try:
-            with open(".env", "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("ANTHROPIC_API_KEY="):
-                        api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
-                        break
-        except Exception:
-            pass
-    while not api_key:
-        print("ANTHROPIC_API_KEY environment variable is not set.")
-        api_key = input("Please enter your Anthropic API key (sk-ant-...): ").strip()
-    return api_key
+def create_ollama_client():
+    api_key = os.getenv("OLLAMA_API_KEY")
+    if OLLAMA_HOST == "https://ollama.com":
+        if not api_key:
+            raise RuntimeError(
+                "Ollama Cloud needs OLLAMA_API_KEY. For local Ollama, use "
+                "OLLAMA_HOST=http://localhost:11434 and leave the key blank."
+            )
+        return Client(
+            host=OLLAMA_HOST,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    return Client(host=OLLAMA_HOST)
 
 
 def main():
-    api_key = get_anthropic_api_key()
-    client = anthropic.Anthropic(api_key=api_key)
-    messages = []
+    global _pending_delete
+    initialize_database()
+    client = create_ollama_client()
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     print("Hotel front-desk assistant. Type 'quit' to exit.\n")
 
@@ -388,40 +452,72 @@ def main():
         if not user_text:
             continue
 
+        # Delete confirmation is handled here, outside the model, so an LLM
+        # response can never substitute for the staff member's explicit yes.
+        if _pending_delete is not None:
+            answer = re.sub(r"[^a-z ]", "", user_text.casefold()).strip()
+            customer = _pending_delete
+            if answer in {"yes", "y", "yes please", "confirm", "confirm delete", "yes delete", "yes delete it"}:
+                _pending_delete = None
+                result = tool_delete_customer(customer["id"])
+                reply = (
+                    f"Deleted customer #{customer['id']} ({customer['full_name']}, room {customer['room_number']})."
+                    if result.get("success") else "I couldn't delete that customer: " + "; ".join(result.get("errors", []))
+                )
+                print("Agent:", reply)
+                messages.extend([
+                    {"role": "user", "content": user_text},
+                    {"role": "assistant", "content": reply},
+                ])
+            elif answer in {"no", "n", "no thanks", "cancel", "cancel delete", "do not delete"}:
+                _pending_delete = None
+                reply = f"Cancelled. Customer #{customer['id']} was not deleted."
+                print("Agent:", reply)
+                messages.extend([
+                    {"role": "user", "content": user_text},
+                    {"role": "assistant", "content": reply},
+                ])
+            else:
+                print("Agent: Please reply yes to delete this customer, or no to cancel.")
+            continue
+
         messages.append({"role": "user", "content": user_text})
 
-        # Loop until Claude stops asking to use tools
+        # Loop until Ollama returns a normal text response without tool calls.
         while True:
-            response = client.messages.create(
+            response = client.chat(
                 model=MODEL,
-                max_tokens=1000,
-                system=SYSTEM_PROMPT,
-                tools=TOOLS,
                 messages=messages,
+                tools=TOOLS,
+                stream=False,
             )
 
-            messages.append({"role": "assistant", "content": response.content})
+            assistant_message = response.message
+            messages.append(assistant_message)
+            tool_calls = assistant_message.tool_calls or []
+            delete_requested = any(call.function.name == "delete_customer" for call in tool_calls)
+            if assistant_message.content and not delete_requested:
+                print("Agent:", assistant_message.content)
 
-            tool_uses = [b for b in response.content if b.type == "tool_use"]
-            text_blocks = [b.text for b in response.content if b.type == "text"]
-
-            if text_blocks:
-                print("Agent:", " ".join(text_blocks))
-
-            if response.stop_reason != "tool_use":
+            if not tool_calls:
                 break
 
-            tool_results = []
-            for block in tool_uses:
-                result = run_tool(block.name, block.input)
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(result, default=str),
-                    }
+            for call in tool_calls:
+                tool_name = call.function.name
+                result = run_tool(tool_name, call.function.arguments)
+                messages.append({
+                    "role": "tool",
+                    "tool_name": tool_name,
+                    "content": json.dumps(result, default=str),
+                })
+
+            if _pending_delete is not None:
+                customer = _pending_delete
+                print(
+                    f"Agent: Are you sure you want to delete customer #{customer['id']}, "
+                    f"{customer['full_name']} (room {customer['room_number']})? Reply yes or no."
                 )
-            messages.append({"role": "user", "content": tool_results})
+                break
 
 
 if __name__ == "__main__":
