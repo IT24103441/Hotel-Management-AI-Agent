@@ -119,7 +119,7 @@ def ensure_phone_unique_index(db):
 # 2. VALIDATION (FR6 - reject invalid data, explain why)
 # ---------------------------------------------------------------------------
 
-PHONE_RE = re.compile(r"^\d{10}$")
+PHONE_RE = re.compile(r"^(?:[0-9]{10}|\+94[0-9]{9})$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 ROOM_RE = re.compile(r"^[A-Za-z]?\d{1,4}[A-Za-z]?$")
 
@@ -132,8 +132,14 @@ def validate_full_name(v):
 
 def validate_phone(v):
     if not isinstance(v, str) or not PHONE_RE.fullmatch(v.strip()):
-        return "Phone number must contain exactly 10 digits (numbers only)."
+        return "Enter a 10-digit local number (e.g. 0771234567) or +94 followed by 9 digits (e.g. +94771234567)."
     return None
+
+
+def normalize_phone(phone):
+    """Store Sri Lankan +94 numbers in the equivalent 10-digit local format."""
+    cleaned = phone.strip()
+    return "0" + cleaned[3:] if cleaned.startswith("+94") else cleaned
 
 
 def validate_email(v):
@@ -200,8 +206,10 @@ def find_room_booking_conflict(db, room_number, checkin, checkout, exclude_custo
 
 
 def find_phone_conflict(db, phone, exclude_customer_id=None):
-    sql = "SELECT id, full_name FROM customers WHERE phone = ?"
-    params = [phone.strip()]
+    normalized = normalize_phone(phone)
+    international = "+94" + normalized[1:]
+    sql = "SELECT id, full_name FROM customers WHERE phone IN (?, ?)"
+    params = [normalized, international]
     if exclude_customer_id is not None:
         sql += " AND id != ?"
         params.append(int(exclude_customer_id))
@@ -245,11 +253,12 @@ def tool_save_customer(full_name, phone, room_number, checkin, checkout,
         conflict = find_room_booking_conflict(db, room_number, checkin, checkout)
         if conflict:
             return {"success": False, "errors": [room_conflict_error(room_number, conflict)]}
+        normalized_phone = normalize_phone(phone)
         cursor = db.execute(
             """INSERT INTO customers
                (full_name, phone, email, room_number, checkin, checkout, special_requests)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (full_name.strip(), phone.strip(), (email or "").strip() or None,
+            (full_name.strip(), normalized_phone, (email or "").strip() or None,
              room_number.strip(), checkin.strip(), checkout.strip(),
              (special_requests or "").strip() or None),
         )
@@ -327,6 +336,8 @@ def tool_update_customer(customer_id, updates):
         return {"success": False, "errors": errors}
 
     clean_updates = {k: (v.strip() if isinstance(v, str) else v) for k, v in updates.items()}
+    if "phone" in clean_updates:
+        clean_updates["phone"] = normalize_phone(clean_updates["phone"])
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
         if "phone" in clean_updates:
@@ -396,13 +407,13 @@ TOOLS = [
             "description": "Save a brand new customer record once ALL required details have been collected "
                             "and look valid. Do not call this until you have full_name, phone, room_number, "
                             "checkin and checkout. The room must be available for the full date range. "
-                            "The phone must have exactly 10 digits and be unique. Names may repeat. "
+                            "The phone must be a 10-digit local number or +94 followed by 9 digits, and be unique. Names may repeat. "
                             "Never invent values for missing fields.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "full_name": {"type": "string"},
-                    "phone": {"type": "string", "description": "Exactly 10 digits, numbers only, and unique across customers"},
+                    "phone": {"type": "string", "description": "10-digit local format (0771234567) or +94 format (+94771234567); unique across customers"},
                     "email": {"type": "string", "description": "optional"},
                     "room_number": {"type": "string", "description": "e.g. 204 or A12"},
                     "checkin": {"type": "string", "description": "YYYY-MM-DD"},
@@ -431,7 +442,7 @@ TOOLS = [
             "name": "update_customer",
             "description": "Update one or more fields of an existing customer. The customer ID itself "
                             "can never be changed. Only include fields that are actually changing. "
-                            "Phone numbers must contain exactly 10 digits and be unique across customers. "
+                            "Phone numbers must use a 10-digit local format or +94 followed by 9 digits, and be unique across customers. "
                             "The resulting room and stay dates must not overlap another booking.",
             "parameters": {
                 "type": "object",
@@ -476,7 +487,7 @@ sentences and you manage customer records using your tools.
 Rules you must always follow:
 - Ask for missing required details in small steps (one or two at a time), never a long form.
 - Never guess or invent a value for a missing or unclear field.
-- Phone numbers must contain exactly 10 digits. A phone number can belong to only one customer. Different customers may have the same name.
+- Phone numbers must use either a 10-digit local format (e.g. 0771234567) or +94 followed by 9 digits (e.g. +94771234567). Treat both formats as the same number when checking uniqueness. Different customers may have the same name.
 - Required fields for a new customer: full name, phone number, room number, check-in date, \
 check-out date. Email and special requests are optional.
 - A room cannot be assigned to two customers for overlapping stay dates. If the requested \
