@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f7f8">
+  <title>Hotel Desk</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">H</div>
+        <div>
+          <div class="brand-name">Hotel Desk</div>
+          <div class="brand-caption">Guest assistant</div>
+        </div>
+      </div>
+
+      <button class="new-chat" id="new-chat" type="button">
+        <span aria-hidden="true">＋</span> New conversation
+      </button>
+
+      <div class="sidebar-label">YOUR ASSISTANT</div>
+      <div class="assistant-card">
+        <span class="online-dot"></span>
+        <div>
+          <div class="assistant-title">Front desk agent</div>
+          <div class="assistant-caption">Ollama · {{ model }}</div>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">Guest records are stored in your local SQLite database.</div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <div class="mobile-brand"><span class="brand-mark small">H</span> Hotel Desk</div>
+        <div class="connection"><span class="online-dot"></span> Local assistant</div>
+      </header>
+
+      <section class="conversation" aria-label="Hotel assistant conversation">
+        <div class="welcome" id="welcome">
+          <div class="welcome-icon" aria-hidden="true">H</div>
+          <h1>How can I help at the front desk?</h1>
+          <p>Add a guest, look up a record, or make a change using a message.</p>
+          <div class="suggestions">
+            <button type="button" data-prompt="Register a new guest">＋ Register a guest</button>
+            <button type="button" data-prompt="Find customer ">⌕ Find a customer</button>
+            <button type="button" data-prompt="Update customer ">↗ Update a record</button>
+            <button type="button" data-prompt="Delete customer ">⌫ Delete a record</button>
+          </div>
+        </div>
+        <div class="messages" id="messages" aria-live="polite"></div>
+        <div class="typing hidden" id="typing"><span></span><span></span><span></span><em>Thinking</em></div>
+      </section>
+
+      <footer class="composer-area">
+        <form class="composer" id="chat-form">
+          <textarea id="message-input" rows="1" placeholder="Message your hotel assistant…" aria-label="Message your hotel assistant"></textarea>
+          <button class="send-button" id="send-button" type="submit" aria-label="Send message" title="Send message">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+          </button>
+        </form>
+        <div class="composer-note">Enter to send · Shift+Enter for a new line</div>
+      </footer>
+    </main>
+  </div>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
