@@ -24,8 +24,23 @@ def chat():
         return jsonify({"error": "Type a message first."}), 400
 
     try:
+        with agent.get_db() as db:
+            previous_customer_id = db.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM customers"
+            ).fetchone()[0]
         replies = agent.process_chat_turn(ollama_client, conversation, message)
-        return jsonify({"replies": replies})
+        with agent.get_db() as db:
+            new_booking = db.execute(
+                "SELECT checkin, checkout FROM customers WHERE id > ? ORDER BY id DESC LIMIT 1",
+                (previous_customer_id,),
+            ).fetchone()
+        result = {"replies": replies}
+        if new_booking:
+            result["booking_dates"] = {
+                "checkin": new_booking["checkin"],
+                "checkout": new_booking["checkout"],
+            }
+        return jsonify(result)
     except Exception as error:
         app.logger.exception("Hotel agent request failed")
         return jsonify({

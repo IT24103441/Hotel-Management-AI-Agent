@@ -109,6 +109,10 @@ async function sendMessage(text) {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "The request failed.");
     for (const reply of result.replies || []) addMessage("assistant", reply);
+    if (result.booking_dates) {
+      availabilityCheckin.value = result.booking_dates.checkin;
+      availabilityCheckout.value = result.booking_dates.checkout;
+    }
     refreshAvailability();
   } catch (error) {
     addMessage("assistant", error.message || "Something went wrong. Please try again.");
