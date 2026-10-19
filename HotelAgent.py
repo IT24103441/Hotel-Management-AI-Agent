@@ -99,17 +99,27 @@ def initialize_database():
                 special_requests TEXT
             )
         """)
+        ensure_phone_unique_index(db)
 
 
 def row_to_dict(row):
     return dict(row) if row is not None else None
 
 
+def ensure_phone_unique_index(db):
+    """Add the database constraint once legacy duplicate numbers are resolved."""
+    duplicates = db.execute(
+        "SELECT 1 FROM customers GROUP BY phone HAVING COUNT(*) > 1 LIMIT 1"
+    ).fetchone()
+    if duplicates is None:
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone)")
+
+
 # ---------------------------------------------------------------------------
 # 2. VALIDATION (FR6 - reject invalid data, explain why)
 # ---------------------------------------------------------------------------
 
-PHONE_RE = re.compile(r"^\+?\d{9,15}$")
+PHONE_RE = re.compile(r"^\d{10}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 ROOM_RE = re.compile(r"^[A-Za-z]?\d{1,4}[A-Za-z]?$")
 
@@ -121,8 +131,8 @@ def validate_full_name(v):
 
 
 def validate_phone(v):
-    if not v or not PHONE_RE.match(v.strip()):
-        return "Phone number must be 9 to 15 digits, and may start with '+'."
+    if not isinstance(v, str) or not PHONE_RE.fullmatch(v.strip()):
+        return "Phone number must contain exactly 10 digits (numbers only)."
     return None
 
 
@@ -189,6 +199,22 @@ def find_room_booking_conflict(db, room_number, checkin, checkout, exclude_custo
     return row_to_dict(db.execute(sql, params).fetchone())
 
 
+def find_phone_conflict(db, phone, exclude_customer_id=None):
+    sql = "SELECT id, full_name FROM customers WHERE phone = ?"
+    params = [phone.strip()]
+    if exclude_customer_id is not None:
+        sql += " AND id != ?"
+        params.append(int(exclude_customer_id))
+    return row_to_dict(db.execute(sql, params).fetchone())
+
+
+def phone_conflict_error(conflict):
+    return (
+        f"That phone number is already used by customer #{conflict['id']} "
+        f"({conflict['full_name']}). Each customer must have a unique phone number."
+    )
+
+
 def room_conflict_error(room_number, conflict):
     return (
         f"Room {room_number} is already booked for those dates by "
@@ -213,6 +239,9 @@ def tool_save_customer(full_name, phone, room_number, checkin, checkout,
         # Lock before checking availability so concurrent requests cannot both
         # see the room as free and create overlapping stays.
         db.execute("BEGIN IMMEDIATE")
+        phone_conflict = find_phone_conflict(db, phone)
+        if phone_conflict:
+            return {"success": False, "errors": [phone_conflict_error(phone_conflict)]}
         conflict = find_room_booking_conflict(db, room_number, checkin, checkout)
         if conflict:
             return {"success": False, "errors": [room_conflict_error(room_number, conflict)]}
@@ -273,16 +302,39 @@ def tool_update_customer(customer_id, updates):
         return {"success": False, "errors": [f"Unknown field(s): {', '.join(unknown)}"]}
 
     merged = {**existing, **updates}
-    errors = validate_new_customer(
-        merged["full_name"], merged["phone"], merged.get("email"),
-        merged["room_number"], merged["checkin"], merged["checkout"],
-    )
+    errors = []
+    if "full_name" in updates:
+        error = validate_full_name(merged["full_name"])
+        if error:
+            errors.append(error)
+    if "phone" in updates:
+        error = validate_phone(merged["phone"])
+        if error:
+            errors.append(error)
+    if "email" in updates:
+        error = validate_email(merged.get("email"))
+        if error:
+            errors.append(error)
+    if "room_number" in updates:
+        error = validate_room(merged["room_number"])
+        if error:
+            errors.append(error)
+    if "checkin" in updates or "checkout" in updates:
+        error = validate_dates(merged["checkin"], merged["checkout"])
+        if error:
+            errors.append(error)
     if errors:
         return {"success": False, "errors": errors}
 
     clean_updates = {k: (v.strip() if isinstance(v, str) else v) for k, v in updates.items()}
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
+        if "phone" in clean_updates:
+            phone_conflict = find_phone_conflict(
+                db, clean_updates["phone"], exclude_customer_id=customer_id
+            )
+            if phone_conflict:
+                return {"success": False, "errors": [phone_conflict_error(phone_conflict)]}
         conflict = find_room_booking_conflict(
             db,
             merged["room_number"],
@@ -310,6 +362,7 @@ def tool_delete_customer(customer_id):
     try:
         with get_db() as db:
             db.execute("DELETE FROM customers WHERE id = ?", (int(customer_id),))
+            ensure_phone_unique_index(db)
     except sqlite3.Error as e:
         return {"success": False, "errors": [f"The local database could not complete the deletion: {e}"]}
     return {"success": True, "deleted_customer": existing}
@@ -343,12 +396,13 @@ TOOLS = [
             "description": "Save a brand new customer record once ALL required details have been collected "
                             "and look valid. Do not call this until you have full_name, phone, room_number, "
                             "checkin and checkout. The room must be available for the full date range. "
+                            "The phone must have exactly 10 digits and be unique. Names may repeat. "
                             "Never invent values for missing fields.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "full_name": {"type": "string"},
-                    "phone": {"type": "string", "description": "9 to 15 digits, may start with +"},
+                    "phone": {"type": "string", "description": "Exactly 10 digits, numbers only, and unique across customers"},
                     "email": {"type": "string", "description": "optional"},
                     "room_number": {"type": "string", "description": "e.g. 204 or A12"},
                     "checkin": {"type": "string", "description": "YYYY-MM-DD"},
@@ -377,6 +431,7 @@ TOOLS = [
             "name": "update_customer",
             "description": "Update one or more fields of an existing customer. The customer ID itself "
                             "can never be changed. Only include fields that are actually changing. "
+                            "Phone numbers must contain exactly 10 digits and be unique across customers. "
                             "The resulting room and stay dates must not overlap another booking.",
             "parameters": {
                 "type": "object",
@@ -421,6 +476,7 @@ sentences and you manage customer records using your tools.
 Rules you must always follow:
 - Ask for missing required details in small steps (one or two at a time), never a long form.
 - Never guess or invent a value for a missing or unclear field.
+- Phone numbers must contain exactly 10 digits. A phone number can belong to only one customer. Different customers may have the same name.
 - Required fields for a new customer: full name, phone number, room number, check-in date, \
 check-out date. Email and special requests are optional.
 - A room cannot be assigned to two customers for overlapping stay dates. If the requested \
