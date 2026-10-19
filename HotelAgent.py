@@ -7,7 +7,8 @@ which action to take. Ollama runs locally by default; data is stored in SQLite.
 
 Run:
     py -m pip install -r requirements.txt
-    python HotelAgent.py
+    python HotelAgentWeb.py  # open the browser chat frontend
+    python HotelAgent.py     # use the terminal chat instead
 
 The default model is the already-installed llama3.2:3b. Set OLLAMA_MODEL in .env
 to another model shown by `ollama list` if you prefer.
@@ -439,87 +440,93 @@ def create_ollama_client():
     return Client(host=OLLAMA_HOST)
 
 
-def main():
+def process_chat_turn(client, messages, user_text):
+    """Run one chat turn and return the text replies for CLI or GUI display."""
     global _pending_delete
+    replies = []
+
+    # The application, not the model, enforces the delete confirmation.
+    if _pending_delete is not None:
+        answer = re.sub(r"[^a-z ]", "", user_text.casefold()).strip()
+        customer = _pending_delete
+        if answer in {"yes", "y", "yes please", "confirm", "confirm delete", "yes delete", "yes delete it"}:
+            _pending_delete = None
+            result = tool_delete_customer(customer["id"])
+            reply = (
+                f"Deleted customer #{customer['id']} ({customer['full_name']}, room {customer['room_number']})."
+                if result.get("success") else "I couldn't delete that customer: " + "; ".join(result.get("errors", []))
+            )
+            messages.extend([
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": reply},
+            ])
+            return [reply]
+        if answer in {"no", "n", "no thanks", "cancel", "cancel delete", "do not delete"}:
+            _pending_delete = None
+            reply = f"Cancelled. Customer #{customer['id']} was not deleted."
+            messages.extend([
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": reply},
+            ])
+            return [reply]
+        return ["Please reply yes to delete this customer, or no to cancel."]
+
+    messages.append({"role": "user", "content": user_text})
+
+    # Loop until Ollama returns a normal text response without tool calls.
+    while True:
+        response = client.chat(
+            model=MODEL,
+            messages=messages,
+            tools=TOOLS,
+            stream=False,
+        )
+
+        assistant_message = response.message
+        messages.append(assistant_message)
+        tool_calls = assistant_message.tool_calls or []
+        delete_requested = any(call.function.name == "delete_customer" for call in tool_calls)
+        if assistant_message.content and not delete_requested:
+            replies.append(assistant_message.content)
+
+        if not tool_calls:
+            return replies
+
+        for call in tool_calls:
+            tool_name = call.function.name
+            result = run_tool(tool_name, call.function.arguments)
+            messages.append({
+                "role": "tool",
+                "tool_name": tool_name,
+                "content": json.dumps(result, default=str),
+            })
+
+        if _pending_delete is not None:
+            customer = _pending_delete
+            replies.append(
+                f"Are you sure you want to delete customer #{customer['id']}, "
+                f"{customer['full_name']} (room {customer['room_number']})? Reply yes or no."
+            )
+            return replies
+
+
+def main():
     initialize_database()
     client = create_ollama_client()
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     print("Hotel front-desk assistant. Type 'quit' to exit.\n")
-
     while True:
         user_text = input("Staff: ").strip()
         if user_text.lower() in {"quit", "exit"}:
             break
         if not user_text:
             continue
-
-        # Delete confirmation is handled here, outside the model, so an LLM
-        # response can never substitute for the staff member's explicit yes.
-        if _pending_delete is not None:
-            answer = re.sub(r"[^a-z ]", "", user_text.casefold()).strip()
-            customer = _pending_delete
-            if answer in {"yes", "y", "yes please", "confirm", "confirm delete", "yes delete", "yes delete it"}:
-                _pending_delete = None
-                result = tool_delete_customer(customer["id"])
-                reply = (
-                    f"Deleted customer #{customer['id']} ({customer['full_name']}, room {customer['room_number']})."
-                    if result.get("success") else "I couldn't delete that customer: " + "; ".join(result.get("errors", []))
-                )
+        try:
+            for reply in process_chat_turn(client, messages, user_text):
                 print("Agent:", reply)
-                messages.extend([
-                    {"role": "user", "content": user_text},
-                    {"role": "assistant", "content": reply},
-                ])
-            elif answer in {"no", "n", "no thanks", "cancel", "cancel delete", "do not delete"}:
-                _pending_delete = None
-                reply = f"Cancelled. Customer #{customer['id']} was not deleted."
-                print("Agent:", reply)
-                messages.extend([
-                    {"role": "user", "content": user_text},
-                    {"role": "assistant", "content": reply},
-                ])
-            else:
-                print("Agent: Please reply yes to delete this customer, or no to cancel.")
-            continue
-
-        messages.append({"role": "user", "content": user_text})
-
-        # Loop until Ollama returns a normal text response without tool calls.
-        while True:
-            response = client.chat(
-                model=MODEL,
-                messages=messages,
-                tools=TOOLS,
-                stream=False,
-            )
-
-            assistant_message = response.message
-            messages.append(assistant_message)
-            tool_calls = assistant_message.tool_calls or []
-            delete_requested = any(call.function.name == "delete_customer" for call in tool_calls)
-            if assistant_message.content and not delete_requested:
-                print("Agent:", assistant_message.content)
-
-            if not tool_calls:
-                break
-
-            for call in tool_calls:
-                tool_name = call.function.name
-                result = run_tool(tool_name, call.function.arguments)
-                messages.append({
-                    "role": "tool",
-                    "tool_name": tool_name,
-                    "content": json.dumps(result, default=str),
-                })
-
-            if _pending_delete is not None:
-                customer = _pending_delete
-                print(
-                    f"Agent: Are you sure you want to delete customer #{customer['id']}, "
-                    f"{customer['full_name']} (room {customer['room_number']})? Reply yes or no."
-                )
-                break
+        except Exception as e:
+            print(f"Agent: I couldn't connect to Ollama or complete that request: {e}")
 
 
 if __name__ == "__main__":
