@@ -9,6 +9,17 @@
   --green: #2d9a70;
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #e8ebf0;
+  --muted: #a3acb9;
+  --line: #373e49;
+  --canvas: #171a20;
+  --sidebar: #20242c;
+  --accent: #83b5f5;
+  --green: #52c28f;
+}
+
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body { color: var(--ink); background: var(--canvas); font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -58,6 +69,10 @@ button { cursor: pointer; }
 
 .main-panel { display: flex; min-width: 0; min-height: 100vh; flex: 1; flex-direction: column; }
 .topbar { display: flex; align-items: center; justify-content: flex-end; height: 57px; padding: 0 30px; border-bottom: 1px solid #f0f0f1; }
+.topbar-actions { display: flex; align-items: center; gap: 17px; }
+.theme-toggle { display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); background: var(--canvas); font-size: 10px; transition: background .15s, border-color .15s; }
+.theme-toggle:hover { background: #f0f4f9; border-color: #ccd5e0; }
+.theme-toggle span { font-size: 14px; line-height: 1; }
 .connection { display: flex; align-items: center; gap: 8px; color: #68717d; font-size: 11px; }
 .connection .online-dot { width: 7px; height: 7px; flex-basis: 7px; box-shadow: none; }
 .mobile-brand { display: none; align-items: center; gap: 9px; font-size: 13px; font-weight: 700; }
@@ -93,12 +108,48 @@ button { cursor: pointer; }
 .send-button:disabled { cursor: default; opacity: .45; }
 .send-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .composer-note { padding: 8px 5px 0; color: #9a9fa7; font-size: 9px; text-align: center; }
+
+:root[data-theme="dark"] .topbar { border-bottom-color: var(--line); }
+:root[data-theme="dark"] .assistant-card,
+:root[data-theme="dark"] .availability-card,
+:root[data-theme="dark"] .new-chat,
+:root[data-theme="dark"] .suggestions button,
+:root[data-theme="dark"] .composer,
+:root[data-theme="dark"] .theme-toggle { color: var(--ink); background: #252a33; border-color: #3b4350; }
+:root[data-theme="dark"] .new-chat:hover,
+:root[data-theme="dark"] .suggestions button:hover,
+:root[data-theme="dark"] .theme-toggle:hover { background: #303744; border-color: #536176; }
+:root[data-theme="dark"] .availability-heading h2,
+:root[data-theme="dark"] .availability-room-name,
+:root[data-theme="dark"] .suggestions button { color: #dce2eb; }
+:root[data-theme="dark"] .availability-dates input { color: var(--ink); background: #1b1f26; border-color: #414956; }
+:root[data-theme="dark"] .availability-group { border-bottom-color: #343b46; }
+:root[data-theme="dark"] .availability-row:hover .availability-room-name { color: #9bc6ff; }
+:root[data-theme="dark"] .availability-room-count { color: #bdd5f5; }
+:root[data-theme="dark"] .availability-note { color: #f0a99d; }
+:root[data-theme="dark"] .room-number-heading { color: #aab3c0; }
+:root[data-theme="dark"] .room-number-chip { color: #a8e0bd; background: #20352b; border-color: #365544; }
+:root[data-theme="dark"] .room-number-section:last-child .room-number-chip { color: #f0b6a8; background: #3b2927; border-color: #5c3c38; }
+:root[data-theme="dark"] .room-number-empty { color: var(--muted); background: transparent; border-color: transparent; }
+:root[data-theme="dark"] .message.user .message-body { color: #e8ebf0; background: #2a303a; }
+:root[data-theme="dark"] .message.user .message-avatar { color: #d4e3f8; background: #343d4b; }
+:root[data-theme="dark"] .composer textarea { color: var(--ink); }
+:root[data-theme="dark"] .composer textarea::placeholder,
+:root[data-theme="dark"] .composer-note { color: #929baa; }
+:root[data-theme="dark"] .sidebar-footer { color: #a0a8b3; border-top-color: var(--line); }
+:root[data-theme="dark"] .sidebar-label { color: #a0a8b3; }
+:root[data-theme="dark"] .connection { color: #bdc5d0; }
+:root[data-theme="dark"] .welcome p { color: #a3acb9; }
+:root[data-theme="dark"] .message-avatar { background: #29405b; }
 @keyframes pulse { 0%, 60%, 100% { opacity: .35; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
 @keyframes appear { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
 @media (max-width: 680px) {
   .sidebar { display: none; }
   .topbar { justify-content: space-between; height: 52px; padding: 0 15px; }
+  .topbar-actions { gap: 9px; }
+  .connection { gap: 0; font-size: 0; }
+  .theme-toggle { padding: 7px 8px; }
   .mobile-brand { display: flex; }
   .conversation { padding: 24px 15px 16px; }
   .welcome { margin-bottom: 22px; }
