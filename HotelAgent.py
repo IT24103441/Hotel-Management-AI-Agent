@@ -440,6 +440,44 @@ def tool_list_customers():
     return {"success": True, "customers": customers}
 
 
+def get_room_availability(checkin, checkout):
+    date_error = validate_dates(checkin, checkout)
+    if date_error:
+        return {"success": False, "error": date_error}
+
+    occupied = {"double": set(), "triple": set(), "six_guest": set()}
+    with get_db() as db:
+        bookings = db.execute(
+            """SELECT DISTINCT room_number FROM customers
+               WHERE checkin < ? AND checkout > ?""",
+            (checkout.strip(), checkin.strip()),
+        ).fetchall()
+
+    for booking in bookings:
+        try:
+            room_number = int(str(booking["room_number"]).strip())
+        except (TypeError, ValueError):
+            continue
+        if 1 <= room_number <= 199:
+            occupied["double"].add(room_number)
+        elif 200 <= room_number <= 299:
+            occupied["triple"].add(room_number)
+        elif 300 <= room_number <= 500:
+            occupied["six_guest"].add(room_number)
+
+    totals = {"double": 199, "triple": 100, "six_guest": 201}
+    return {
+        "success": True,
+        "checkin": checkin,
+        "checkout": checkout,
+        "available": {
+            category: total - len(occupied[category])
+            for category, total in totals.items()
+        },
+        "totals": totals,
+    }
+
+
 TOOL_FUNCTIONS = {
     "save_customer": tool_save_customer,
     "find_customer": tool_find_customer,
@@ -542,6 +580,7 @@ sentences and you manage customer records using your tools.
 Rules you must always follow:
 - Ask for missing required details in small steps (one or two at a time), never a long form.
 - Never guess or invent a value for a missing or unclear field.
+- When an action is needed, call the provided tool directly. Never print tool-call JSON as a message to staff.
 - Phone numbers must use either a 10-digit local format (e.g. 0771234567) or +94 followed by 9 digits (e.g. +94771234567). Treat both formats as the same number when checking uniqueness. Different customers may have the same name.
 - Required fields for a new customer: full name, phone number, room number, number of guests, check-in date, \
 check-out date. Email and special requests are optional.
@@ -644,6 +683,7 @@ def process_chat_turn(client, messages, user_text):
     messages.append({"role": "user", "content": user_text})
 
     # Loop until Ollama returns a normal text response without tool calls.
+    malformed_tool_retries = 0
     while True:
         response = client.chat(
             model=MODEL,
@@ -655,6 +695,26 @@ def process_chat_turn(client, messages, user_text):
         assistant_message = response.message
         messages.append(assistant_message)
         tool_calls = assistant_message.tool_calls or []
+        if not tool_calls and assistant_message.content:
+            looks_like_tool_call = re.search(
+                r'"name"\s*:\s*"(?:save_customer|find_customer|update_customer|delete_customer|list_customers)"',
+                assistant_message.content,
+            )
+            if looks_like_tool_call:
+                messages.pop()
+                if malformed_tool_retries == 0:
+                    malformed_tool_retries += 1
+                    messages.append({
+                        "role": "user",
+                        "content": "Your last reply was not executed because it was tool-call JSON in plain text. Use the provided tool directly. Do not show tool-call JSON to staff.",
+                    })
+                    continue
+                reply = (
+                    "I couldn't complete that request because the local model returned a tool request "
+                    "as plain text instead of calling the hotel function. Please try the request again."
+                )
+                messages.append({"role": "assistant", "content": reply})
+                return [reply]
         delete_requested = any(call.function.name == "delete_customer" for call in tool_calls)
         if assistant_message.content and not delete_requested:
             replies.append(assistant_message.content)

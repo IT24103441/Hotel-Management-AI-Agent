@@ -41,6 +41,16 @@ def reset():
     return jsonify({"ok": True})
 
 
+@app.get("/api/availability")
+def availability():
+    checkin = request.args.get("checkin", "").strip()
+    checkout = request.args.get("checkout", "").strip()
+    result = agent.get_room_availability(checkin, checkout)
+    if not result["success"]:
+        return jsonify(result), 400
+    return jsonify(result)
+
+
 if __name__ == "__main__":
     print("Hotel chat frontend: http://127.0.0.1:5000")
     app.run(host="127.0.0.1", port=5000, debug=False, threaded=False)
