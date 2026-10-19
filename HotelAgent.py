@@ -465,7 +465,8 @@ def get_room_availability(checkin, checkout):
         elif 300 <= room_number <= 500:
             occupied["six_guest"].add(room_number)
 
-    totals = {"double": 199, "triple": 100, "six_guest": 201}
+    ranges = {"double": range(1, 200), "triple": range(200, 300), "six_guest": range(300, 501)}
+    totals = {category: len(room_numbers) for category, room_numbers in ranges.items()}
     return {
         "success": True,
         "checkin": checkin,
@@ -475,6 +476,13 @@ def get_room_availability(checkin, checkout):
             for category, total in totals.items()
         },
         "totals": totals,
+        "rooms": {
+            category: {
+                "available": sorted(set(room_numbers) - occupied[category]),
+                "booked": sorted(occupied[category]),
+            }
+            for category, room_numbers in ranges.items()
+        },
     }
 
 
