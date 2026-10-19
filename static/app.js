@@ -8,7 +8,36 @@ const availabilityCheckin = document.querySelector("#availability-checkin");
 const availabilityCheckout = document.querySelector("#availability-checkout");
 const availabilityList = document.querySelector("#availability-list");
 const availabilityNote = document.querySelector("#availability-note");
+const themeToggle = document.querySelector("#theme-toggle");
 let expandedAvailabilityCategory = null;
+
+function setTheme(theme, persist = true) {
+  const darkMode = theme === "dark";
+  document.documentElement.dataset.theme = darkMode ? "dark" : "light";
+  const icon = document.createElement("span");
+  icon.setAttribute("aria-hidden", "true");
+  icon.textContent = darkMode ? "☀" : "☾";
+  themeToggle.replaceChildren(icon, document.createTextNode(darkMode ? " Light mode" : " Dark mode"));
+  themeToggle.setAttribute("aria-label", darkMode ? "Switch to light mode" : "Switch to dark mode");
+  if (persist) {
+    try {
+      localStorage.setItem("hotel-desk-theme", darkMode ? "dark" : "light");
+    } catch {
+      // Keep the current selection for this page if browser storage is unavailable.
+    }
+  }
+}
+
+let savedTheme = "light";
+try {
+  savedTheme = localStorage.getItem("hotel-desk-theme") === "dark" ? "dark" : "light";
+} catch {
+  // The page can still use the toggle without browser storage.
+}
+setTheme(savedTheme, false);
+themeToggle.addEventListener("click", () => {
+  setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+});
 
 function localDateString(date) {
   const year = date.getFullYear();
