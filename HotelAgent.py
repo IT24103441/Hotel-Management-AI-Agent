@@ -38,13 +38,16 @@ from datetime import datetime
 
 from ollama import Client
 
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def load_local_env():
     """Load simple KEY=value settings from .env without overriding the shell."""
-    if not os.path.exists(".env"):
+    env_path = os.path.join(APP_DIR, ".env")
+    if not os.path.exists(env_path):
         return
     try:
-        with open(".env", "r", encoding="utf-8") as env_file:
+        with open(env_path, "r", encoding="utf-8") as env_file:
             for line in env_file:
                 line = line.strip()
                 if not line or line.startswith("#") or "=" not in line:
@@ -56,7 +59,9 @@ def load_local_env():
 
 
 load_local_env()
-DATABASE_PATH = os.getenv("DATABASE_PATH", "hotel.db")
+DATABASE_PATH = os.getenv("DATABASE_PATH", os.path.join(APP_DIR, "hotel.db"))
+if not os.path.isabs(DATABASE_PATH):
+    DATABASE_PATH = os.path.join(APP_DIR, DATABASE_PATH)
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 _pending_delete = None
@@ -170,6 +175,28 @@ def validate_new_customer(full_name, phone, email, room_number, checkin, checkou
     return errors
 
 
+def find_room_booking_conflict(db, room_number, checkin, checkout, exclude_customer_id=None):
+    """Find a stay in the same room that overlaps the requested date range."""
+    sql = """SELECT id, full_name, room_number, checkin, checkout
+             FROM customers
+             WHERE room_number = ? COLLATE NOCASE
+               AND checkin < ?
+               AND checkout > ?"""
+    params = [room_number.strip(), checkout.strip(), checkin.strip()]
+    if exclude_customer_id is not None:
+        sql += " AND id != ?"
+        params.append(int(exclude_customer_id))
+    return row_to_dict(db.execute(sql, params).fetchone())
+
+
+def room_conflict_error(room_number, conflict):
+    return (
+        f"Room {room_number} is already booked for those dates by "
+        f"{conflict['full_name']} (check-in {conflict['checkin']}, "
+        f"check-out {conflict['checkout']}). Choose another room or different dates."
+    )
+
+
 # ---------------------------------------------------------------------------
 # 3. TOOL IMPLEMENTATIONS
 #    Each returns a plain dict: {"success": bool, ...}. The model must only
@@ -183,6 +210,12 @@ def tool_save_customer(full_name, phone, room_number, checkin, checkout,
         return {"success": False, "errors": errors}
 
     with get_db() as db:
+        # Lock before checking availability so concurrent requests cannot both
+        # see the room as free and create overlapping stays.
+        db.execute("BEGIN IMMEDIATE")
+        conflict = find_room_booking_conflict(db, room_number, checkin, checkout)
+        if conflict:
+            return {"success": False, "errors": [room_conflict_error(room_number, conflict)]}
         cursor = db.execute(
             """INSERT INTO customers
                (full_name, phone, email, room_number, checkin, checkout, special_requests)
@@ -248,9 +281,19 @@ def tool_update_customer(customer_id, updates):
         return {"success": False, "errors": errors}
 
     clean_updates = {k: (v.strip() if isinstance(v, str) else v) for k, v in updates.items()}
-    columns = ", ".join(f"{key} = ?" for key in clean_updates)
-    values = list(clean_updates.values()) + [int(customer_id)]
     with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        conflict = find_room_booking_conflict(
+            db,
+            merged["room_number"],
+            merged["checkin"],
+            merged["checkout"],
+            exclude_customer_id=customer_id,
+        )
+        if conflict:
+            return {"success": False, "errors": [room_conflict_error(merged['room_number'], conflict)]}
+        columns = ", ".join(f"{key} = ?" for key in clean_updates)
+        values = list(clean_updates.values()) + [int(customer_id)]
         db.execute(f"UPDATE customers SET {columns} WHERE id = ?", values)
     return {
         "success": True,
@@ -299,7 +342,8 @@ TOOLS = [
             "name": "save_customer",
             "description": "Save a brand new customer record once ALL required details have been collected "
                             "and look valid. Do not call this until you have full_name, phone, room_number, "
-                            "checkin and checkout. Never invent values for missing fields.",
+                            "checkin and checkout. The room must be available for the full date range. "
+                            "Never invent values for missing fields.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -332,7 +376,8 @@ TOOLS = [
         "function": {
             "name": "update_customer",
             "description": "Update one or more fields of an existing customer. The customer ID itself "
-                            "can never be changed. Only include fields that are actually changing.",
+                            "can never be changed. Only include fields that are actually changing. "
+                            "The resulting room and stay dates must not overlap another booking.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -378,6 +423,8 @@ Rules you must always follow:
 - Never guess or invent a value for a missing or unclear field.
 - Required fields for a new customer: full name, phone number, room number, check-in date, \
 check-out date. Email and special requests are optional.
+- A room cannot be assigned to two customers for overlapping stay dates. If the requested \
+room is already booked, explain which dates conflict and ask for another room or dates.
 - Before calling save_customer, quietly make sure you already have every required field from \
 the conversation.
 - If a tool reports validation errors, explain the problem in simple, friendly words and ask \
