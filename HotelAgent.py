@@ -7,8 +7,10 @@ which action to take. Ollama runs locally by default; data is stored in SQLite.
 
 Run:
     py -m pip install -r requirements.txt
-    ollama pull qwen3
     python HotelAgent.py
+
+The default model is the already-installed llama3.2:3b. Set OLLAMA_MODEL in .env
+to another model shown by `ollama list` if you prefer.
 
 For Ollama Cloud, set OLLAMA_HOST=https://ollama.com, provide OLLAMA_API_KEY,
 and set OLLAMA_MODEL to a model available in your Ollama Cloud account.
@@ -55,7 +57,7 @@ def load_local_env():
 load_local_env()
 DATABASE_PATH = os.getenv("DATABASE_PATH", "hotel.db")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
-MODEL = os.getenv("OLLAMA_MODEL", "qwen3")
+MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 _pending_delete = None
 
 # ---------------------------------------------------------------------------
