@@ -33,8 +33,18 @@ button { cursor: pointer; }
 .availability-dates label { display: grid; gap: 4px; color: #727985; font-size: 9px; font-weight: 600; }
 .availability-dates input { width: 100%; min-width: 0; padding: 7px 8px; border: 1px solid #e1e4e8; border-radius: 7px; color: #39404b; background: #fff; font: inherit; font-size: 10px; }
 .availability-list { display: grid; gap: 2px; margin-top: 11px; }
-.availability-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 1px; border-bottom: 1px solid #f0f1f3; }
-.availability-row:last-child { border-bottom: 0; }
+.availability-group { border-bottom: 1px solid #f0f1f3; }
+.availability-group:last-child { border-bottom: 0; }
+.availability-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 8px 1px; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+.availability-row:hover .availability-room-name { color: #2767c7; }
+.availability-row:focus-visible { outline: 2px solid #8db4eb; outline-offset: 2px; border-radius: 5px; }
+.availability-details { padding: 2px 0 10px; }
+.room-number-section + .room-number-section { margin-top: 9px; }
+.room-number-heading { margin: 0 0 5px; color: #777f8b; font-size: 9px; font-weight: 650; }
+.room-number-grid { display: flex; flex-wrap: wrap; gap: 4px; max-height: 112px; padding: 2px 1px; overflow: auto; }
+.room-number-chip { display: grid; min-width: 24px; height: 21px; place-items: center; padding: 0 4px; border: 1px solid #dce9e1; border-radius: 5px; color: #397654; background: #f3faf5; font-size: 9px; }
+.room-number-section:last-child .room-number-chip { border-color: #f0dfda; color: #9a5346; background: #fdf7f5; }
+.room-number-empty { display: block; height: auto; min-width: auto; padding: 2px 1px; border: 0; color: #9096a0; background: transparent; }
 .availability-room-name { color: #555e6a; font-size: 10px; }
 .availability-room-count { color: #243b58; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .availability-status, .availability-note { color: #8a9099; font-size: 9px; line-height: 1.45; }

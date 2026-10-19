@@ -8,6 +8,7 @@ const availabilityCheckin = document.querySelector("#availability-checkin");
 const availabilityCheckout = document.querySelector("#availability-checkout");
 const availabilityList = document.querySelector("#availability-list");
 const availabilityNote = document.querySelector("#availability-note");
+let expandedAvailabilityCategory = null;
 
 function localDateString(date) {
   const year = date.getFullYear();
@@ -49,8 +50,13 @@ async function refreshAvailability() {
     ];
     availabilityList.replaceChildren();
     for (const [label, key] of roomTypes) {
-      const row = document.createElement("div");
+      const group = document.createElement("section");
+      group.className = "availability-group";
+      const row = document.createElement("button");
+      row.type = "button";
       row.className = "availability-row";
+      row.setAttribute("aria-expanded", String(expandedAvailabilityCategory === key));
+      row.setAttribute("aria-label", `${label}, ${result.available[key]} free. Click to see room numbers.`);
       const name = document.createElement("span");
       name.className = "availability-room-name";
       name.textContent = label;
@@ -59,7 +65,43 @@ async function refreshAvailability() {
       count.textContent = `${result.available[key]} free`;
       count.title = `${result.available[key]} rooms available out of ${result.totals[key]}`;
       row.append(name, count);
-      availabilityList.append(row);
+      row.addEventListener("click", () => {
+        expandedAvailabilityCategory = expandedAvailabilityCategory === key ? null : key;
+        refreshAvailability();
+      });
+
+      const details = document.createElement("div");
+      details.className = "availability-details";
+      details.hidden = expandedAvailabilityCategory !== key;
+      const roomSets = result.rooms[key];
+      for (const [heading, roomNumbers] of [
+        [`Available (${roomSets.available.length})`, roomSets.available],
+        [`Booked (${roomSets.booked.length})`, roomSets.booked],
+      ]) {
+        const section = document.createElement("div");
+        section.className = "room-number-section";
+        const sectionHeading = document.createElement("div");
+        sectionHeading.className = "room-number-heading";
+        sectionHeading.textContent = heading;
+        const numbers = document.createElement("div");
+        numbers.className = "room-number-grid";
+        if (roomNumbers.length) {
+          for (const roomNumber of roomNumbers) {
+            const chip = document.createElement("span");
+            chip.className = "room-number-chip";
+            chip.textContent = String(roomNumber);
+            numbers.append(chip);
+          }
+        } else {
+          numbers.textContent = "None";
+          numbers.classList.add("room-number-empty");
+        }
+        section.append(sectionHeading, numbers);
+        details.append(section);
+      }
+
+      group.append(row, details);
+      availabilityList.append(group);
     }
   } catch (error) {
     availabilityList.replaceChildren();
