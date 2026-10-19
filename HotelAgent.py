@@ -94,11 +94,17 @@ def initialize_database():
                 phone TEXT NOT NULL,
                 email TEXT,
                 room_number TEXT NOT NULL,
+                guest_count INTEGER NOT NULL DEFAULT 1,
                 checkin TEXT NOT NULL,
                 checkout TEXT NOT NULL,
                 special_requests TEXT
             )
         """)
+        customer_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(customers)").fetchall()
+        }
+        if "guest_count" not in customer_columns:
+            db.execute("ALTER TABLE customers ADD COLUMN guest_count INTEGER NOT NULL DEFAULT 1")
         ensure_phone_unique_index(db)
 
 
@@ -121,7 +127,6 @@ def ensure_phone_unique_index(db):
 
 PHONE_RE = re.compile(r"^(?:[0-9]{10}|\+94[0-9]{9})$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-ROOM_RE = re.compile(r"^[A-Za-z]?\d{1,4}[A-Za-z]?$")
 
 
 def validate_full_name(v):
@@ -151,8 +156,40 @@ def validate_email(v):
 
 
 def validate_room(v):
-    if not v or not ROOM_RE.match(v.strip()):
-        return "Room number should look like '204' or 'A12'."
+    try:
+        room_number = int(str(v).strip())
+    except (TypeError, ValueError):
+        return "Choose a room number from 1 to 500."
+    if not 1 <= room_number <= 500:
+        return "Choose a room number from 1 to 500."
+    return None
+
+
+def room_capacity(room_number):
+    number = int(str(room_number).strip())
+    if 1 <= number <= 199:
+        return 2
+    if 200 <= number <= 299:
+        return 3
+    if 300 <= number <= 500:
+        return 6
+    return None
+
+
+def validate_guest_count(guest_count, room_number):
+    if isinstance(guest_count, bool):
+        return "Guest count must be a whole number."
+    if isinstance(guest_count, int):
+        count = guest_count
+    elif isinstance(guest_count, str) and re.fullmatch(r"[0-9]+", guest_count.strip()):
+        count = int(guest_count.strip())
+    else:
+        return "Guest count must be a whole number."
+    if count < 1:
+        return "At least one guest is required for a booking."
+    capacity = room_capacity(room_number)
+    if capacity is not None and count > capacity:
+        return f"Room {room_number} can hold up to {capacity} guests. Choose a room with enough capacity."
     return None
 
 
@@ -175,7 +212,7 @@ def validate_dates(checkin, checkout):
     return None
 
 
-def validate_new_customer(full_name, phone, email, room_number, checkin, checkout):
+def validate_new_customer(full_name, phone, email, room_number, guest_count, checkin, checkout):
     errors = []
     for msg in (
         validate_full_name(full_name),
@@ -185,6 +222,10 @@ def validate_new_customer(full_name, phone, email, room_number, checkin, checkou
     ):
         if msg:
             errors.append(msg)
+    if not validate_room(room_number):
+        guest_msg = validate_guest_count(guest_count, room_number)
+        if guest_msg:
+            errors.append(guest_msg)
     date_msg = validate_dates(checkin, checkout)
     if date_msg:
         errors.append(date_msg)
@@ -237,12 +278,13 @@ def room_conflict_error(room_number, conflict):
 #    report success to staff if success is True (FR8 - honest replies).
 # ---------------------------------------------------------------------------
 
-def tool_save_customer(full_name, phone, room_number, checkin, checkout,
+def tool_save_customer(full_name, phone, room_number, guest_count, checkin, checkout,
                         email=None, special_requests=None):
-    errors = validate_new_customer(full_name, phone, email, room_number, checkin, checkout)
+    errors = validate_new_customer(full_name, phone, email, room_number, guest_count, checkin, checkout)
     if errors:
         return {"success": False, "errors": errors}
 
+    normalized_room = str(int(str(room_number).strip()))
     with get_db() as db:
         # Lock before checking availability so concurrent requests cannot both
         # see the room as free and create overlapping stays.
@@ -250,16 +292,16 @@ def tool_save_customer(full_name, phone, room_number, checkin, checkout,
         phone_conflict = find_phone_conflict(db, phone)
         if phone_conflict:
             return {"success": False, "errors": [phone_conflict_error(phone_conflict)]}
-        conflict = find_room_booking_conflict(db, room_number, checkin, checkout)
+        conflict = find_room_booking_conflict(db, normalized_room, checkin, checkout)
         if conflict:
             return {"success": False, "errors": [room_conflict_error(room_number, conflict)]}
         normalized_phone = normalize_phone(phone)
         cursor = db.execute(
             """INSERT INTO customers
-               (full_name, phone, email, room_number, checkin, checkout, special_requests)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (full_name, phone, email, room_number, guest_count, checkin, checkout, special_requests)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (full_name.strip(), normalized_phone, (email or "").strip() or None,
-             room_number.strip(), checkin.strip(), checkout.strip(),
+             normalized_room, int(guest_count), checkin.strip(), checkout.strip(),
              (special_requests or "").strip() or None),
         )
         customer = row_to_dict(db.execute(
@@ -305,7 +347,7 @@ def tool_update_customer(customer_id, updates):
     if "id" in updates or "customer_id" in updates or "_id" in updates:
         return {"success": False, "errors": ["The customer ID can never be changed."]}
 
-    allowed = {"full_name", "phone", "email", "room_number", "checkin", "checkout", "special_requests"}
+    allowed = {"full_name", "phone", "email", "room_number", "guest_count", "checkin", "checkout", "special_requests"}
     unknown = set(updates.keys()) - allowed
     if unknown:
         return {"success": False, "errors": [f"Unknown field(s): {', '.join(unknown)}"]}
@@ -328,6 +370,11 @@ def tool_update_customer(customer_id, updates):
         error = validate_room(merged["room_number"])
         if error:
             errors.append(error)
+    if "room_number" in updates or "guest_count" in updates:
+        if not validate_room(merged["room_number"]):
+            error = validate_guest_count(merged["guest_count"], merged["room_number"])
+            if error:
+                errors.append(error)
     if "checkin" in updates or "checkout" in updates:
         error = validate_dates(merged["checkin"], merged["checkout"])
         if error:
@@ -335,9 +382,15 @@ def tool_update_customer(customer_id, updates):
     if errors:
         return {"success": False, "errors": errors}
 
+    if "room_number" in updates or "guest_count" in updates:
+        merged["room_number"] = str(int(str(merged["room_number"]).strip()))
     clean_updates = {k: (v.strip() if isinstance(v, str) else v) for k, v in updates.items()}
     if "phone" in clean_updates:
         clean_updates["phone"] = normalize_phone(clean_updates["phone"])
+    if "room_number" in clean_updates:
+        clean_updates["room_number"] = str(int(clean_updates["room_number"]))
+    if "guest_count" in clean_updates:
+        clean_updates["guest_count"] = int(clean_updates["guest_count"])
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
         if "phone" in clean_updates:
@@ -406,7 +459,7 @@ TOOLS = [
             "name": "save_customer",
             "description": "Save a brand new customer record once ALL required details have been collected "
                             "and look valid. Do not call this until you have full_name, phone, room_number, "
-                            "checkin and checkout. The room must be available for the full date range. "
+                            "guest_count, checkin and checkout. The room must be available for the full date range. "
                             "The phone must be a 10-digit local number or +94 followed by 9 digits, and be unique. Names may repeat. "
                             "Never invent values for missing fields.",
             "parameters": {
@@ -415,12 +468,13 @@ TOOLS = [
                     "full_name": {"type": "string"},
                     "phone": {"type": "string", "description": "10-digit local format (0771234567) or +94 format (+94771234567); unique across customers"},
                     "email": {"type": "string", "description": "optional"},
-                    "room_number": {"type": "string", "description": "e.g. 204 or A12"},
+                    "room_number": {"type": "string", "description": "Choose a room from 1 to 500: 1-199 double (up to 2 guests), 200-299 triple (up to 3), 300-500 (up to 6)"},
+                    "guest_count": {"type": "integer", "description": "Number of guests; must fit the selected room's capacity"},
                     "checkin": {"type": "string", "description": "YYYY-MM-DD"},
                     "checkout": {"type": "string", "description": "YYYY-MM-DD, after checkin"},
                     "special_requests": {"type": "string", "description": "optional free text"},
                 },
-                "required": ["full_name", "phone", "room_number", "checkin", "checkout"],
+                "required": ["full_name", "phone", "room_number", "guest_count", "checkin", "checkout"],
             },
         },
     },
@@ -443,6 +497,7 @@ TOOLS = [
             "description": "Update one or more fields of an existing customer. The customer ID itself "
                             "can never be changed. Only include fields that are actually changing. "
                             "Phone numbers must use a 10-digit local format or +94 followed by 9 digits, and be unique across customers. "
+                            "If changing room_number or guest_count, the guests must fit the room capacity. "
                             "The resulting room and stay dates must not overlap another booking.",
             "parameters": {
                 "type": "object",
@@ -488,8 +543,9 @@ Rules you must always follow:
 - Ask for missing required details in small steps (one or two at a time), never a long form.
 - Never guess or invent a value for a missing or unclear field.
 - Phone numbers must use either a 10-digit local format (e.g. 0771234567) or +94 followed by 9 digits (e.g. +94771234567). Treat both formats as the same number when checking uniqueness. Different customers may have the same name.
-- Required fields for a new customer: full name, phone number, room number, check-in date, \
+- Required fields for a new customer: full name, phone number, room number, number of guests, check-in date, \
 check-out date. Email and special requests are optional.
+- Hotel rooms are numbered 1 to 500: rooms 1-199 are double rooms for up to 2 guests, rooms 200-299 are triple rooms for up to 3 guests, and rooms 300-500 hold up to 6 guests. Ask for the preferred room number and number of guests before booking. Never book a room outside its guest capacity.
 - A room cannot be assigned to two customers for overlapping stay dates. If the requested \
 room is already booked, explain which dates conflict and ask for another room or dates.
 - Before calling save_customer, quietly make sure you already have every required field from \
