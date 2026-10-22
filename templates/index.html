@@ -45,12 +45,20 @@
       <header class="topbar">
         <div class="mobile-brand"><span class="brand-mark small">H</span> Hotel Desk</div>
         <div class="topbar-actions">
+          <a class="theme-toggle admin-link" href="{{ url_for('admin') }}">Admin page</a>
           <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch to dark mode">
             <span aria-hidden="true">☾</span> Dark mode
           </button>
           <div class="connection"><span class="online-dot"></span> Local assistant</div>
         </div>
       </header>
+
+      <section class="dashboard" aria-label="Hotel dashboard">
+        <article><span>Rooms free today</span><strong id="dash-available">—</strong><small>of 500 rooms</small></article>
+        <article><span>Active bookings</span><strong id="dash-active">—</strong><small>reserved or checked in</small></article>
+        <article><span>Check-ins today</span><strong id="dash-checkins">—</strong><small>scheduled arrivals</small></article>
+        <article><span>Check-outs today</span><strong id="dash-checkouts">—</strong><small>scheduled departures</small></article>
+      </section>
 
       <section class="conversation" aria-label="Hotel assistant conversation">
         <div class="welcome" id="welcome">
