@@ -598,7 +598,7 @@ def get_room_availability(checkin, checkout):
         "checkout": checkout,
         "available": {
             category: len(set(room_numbers) - occupied[category] - maintenance[category])
-            for category, total in totals.items()
+            for category, room_numbers in ranges.items()
         },
         "totals": totals,
         "rooms": {
