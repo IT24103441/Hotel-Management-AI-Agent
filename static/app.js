@@ -11,6 +11,18 @@ const availabilityNote = document.querySelector("#availability-note");
 const themeToggle = document.querySelector("#theme-toggle");
 let expandedAvailabilityCategory = null;
 
+async function refreshDashboard() {
+  try {
+    const response = await fetch("/api/dashboard");
+    const data = await response.json();
+    if (!response.ok) return;
+    document.querySelector("#dash-available").textContent = data.available_today;
+    document.querySelector("#dash-active").textContent = data.active_bookings;
+    document.querySelector("#dash-checkins").textContent = data.checkins_today;
+    document.querySelector("#dash-checkouts").textContent = data.checkouts_today;
+  } catch { /* Dashboard values refresh when the local server responds. */ }
+}
+
 function setTheme(theme, persist = true) {
   const darkMode = theme === "dark";
   document.documentElement.dataset.theme = darkMode ? "dark" : "light";
@@ -69,7 +81,13 @@ async function refreshAvailability() {
   try {
     const query = new URLSearchParams({ checkin, checkout });
     const response = await fetch(`/api/availability?${query}`);
-    const result = await response.json();
+    const body = await response.text();
+    let result;
+    try {
+      result = JSON.parse(body);
+    } catch {
+      throw new Error("Hotel server eka connect wenne na. VS Code Live Server eken nemei, py HotelAgentWeb.py run karala http://127.0.0.1:5000 open karanna.");
+    }
     if (!response.ok) throw new Error(result.error || "Couldn't check these dates.");
 
     const roomTypes = [
@@ -106,6 +124,7 @@ async function refreshAvailability() {
       for (const [heading, roomNumbers] of [
         [`Available (${roomSets.available.length})`, roomSets.available],
         [`Booked (${roomSets.booked.length})`, roomSets.booked],
+        [`Maintenance (${roomSets.maintenance.length})`, roomSets.maintenance],
       ]) {
         const section = document.createElement("div");
         section.className = "room-number-section";
@@ -185,6 +204,7 @@ async function sendMessage(text) {
       availabilityCheckout.value = result.booking_dates.checkout;
     }
     refreshAvailability();
+    refreshDashboard();
   } catch (error) {
     addMessage("assistant", error.message || "Something went wrong. Please try again.");
   } finally {
@@ -233,3 +253,4 @@ availabilityCheckin.addEventListener("change", refreshAvailability);
 availabilityCheckout.addEventListener("change", refreshAvailability);
 setDefaultAvailabilityDates();
 refreshAvailability();
+refreshDashboard();
