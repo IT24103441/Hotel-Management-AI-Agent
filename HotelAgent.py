@@ -65,6 +65,7 @@ if not os.path.isabs(DATABASE_PATH):
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
 MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 _pending_delete = None
+_pending_cancel = None
 
 # ---------------------------------------------------------------------------
 # 1. DATABASE (permanent local storage - FR7)
@@ -97,14 +98,45 @@ def initialize_database():
                 guest_count INTEGER NOT NULL DEFAULT 1,
                 checkin TEXT NOT NULL,
                 checkout TEXT NOT NULL,
-                special_requests TEXT
+                special_requests TEXT,
+                booking_status TEXT NOT NULL DEFAULT 'reserved',
+                nightly_rate INTEGER NOT NULL DEFAULT 0,
+                total_amount INTEGER NOT NULL DEFAULT 0
             )
         """)
         customer_columns = {
             row["name"] for row in db.execute("PRAGMA table_info(customers)").fetchall()
         }
-        if "guest_count" not in customer_columns:
-            db.execute("ALTER TABLE customers ADD COLUMN guest_count INTEGER NOT NULL DEFAULT 1")
+        migrations = {
+            "guest_count": "INTEGER NOT NULL DEFAULT 1",
+            "booking_status": "TEXT NOT NULL DEFAULT 'reserved'",
+            "nightly_rate": "INTEGER NOT NULL DEFAULT 0",
+            "total_amount": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, definition in migrations.items():
+            if column not in customer_columns:
+                db.execute(f"ALTER TABLE customers ADD COLUMN {column} {definition}")
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS rooms (
+                room_number INTEGER PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'available'
+                    CHECK (status IN ('available', 'maintenance'))
+            )
+        """)
+        db.executemany(
+            "INSERT OR IGNORE INTO rooms (room_number, status) VALUES (?, 'available')",
+            ((room_number,) for room_number in range(1, 501)),
+        )
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS room_rates (
+                room_type TEXT PRIMARY KEY,
+                nightly_rate INTEGER NOT NULL CHECK (nightly_rate >= 0)
+            )
+        """)
+        db.executemany(
+            "INSERT OR IGNORE INTO room_rates (room_type, nightly_rate) VALUES (?, ?)",
+            (("double", 10000), ("triple", 15000), ("six_guest", 25000)),
+        )
         ensure_phone_unique_index(db)
 
 
@@ -176,6 +208,17 @@ def room_capacity(room_number):
     return None
 
 
+def room_type_for_number(room_number):
+    number = int(str(room_number).strip())
+    if 1 <= number <= 199:
+        return "double"
+    if 200 <= number <= 299:
+        return "triple"
+    if 300 <= number <= 500:
+        return "six_guest"
+    return None
+
+
 def validate_guest_count(guest_count, room_number):
     if isinstance(guest_count, bool):
         return "Guest count must be a whole number."
@@ -212,6 +255,28 @@ def validate_dates(checkin, checkout):
     return None
 
 
+BOOKING_STATUSES = {"reserved", "checked_in", "checked_out", "cancelled"}
+
+
+def booking_nights(checkin, checkout):
+    return (parse_date(checkout) - parse_date(checkin)).days
+
+
+def get_nightly_rate(db, room_number):
+    room_type = room_type_for_number(room_number)
+    row = db.execute(
+        "SELECT nightly_rate FROM room_rates WHERE room_type = ?", (room_type,)
+    ).fetchone()
+    return int(row["nightly_rate"]) if row else 0
+
+
+def room_is_in_maintenance(db, room_number):
+    row = db.execute(
+        "SELECT status FROM rooms WHERE room_number = ?", (int(room_number),)
+    ).fetchone()
+    return row is None or row["status"] == "maintenance"
+
+
 def validate_new_customer(full_name, phone, email, room_number, guest_count, checkin, checkout):
     errors = []
     for msg in (
@@ -238,7 +303,8 @@ def find_room_booking_conflict(db, room_number, checkin, checkout, exclude_custo
              FROM customers
              WHERE room_number = ? COLLATE NOCASE
                AND checkin < ?
-               AND checkout > ?"""
+               AND checkout > ?
+               AND booking_status IN ('reserved', 'checked_in')"""
     params = [room_number.strip(), checkout.strip(), checkin.strip()]
     if exclude_customer_id is not None:
         sql += " AND id != ?"
@@ -292,17 +358,22 @@ def tool_save_customer(full_name, phone, room_number, guest_count, checkin, chec
         phone_conflict = find_phone_conflict(db, phone)
         if phone_conflict:
             return {"success": False, "errors": [phone_conflict_error(phone_conflict)]}
+        if room_is_in_maintenance(db, normalized_room):
+            return {"success": False, "errors": [f"Room {normalized_room} is marked for maintenance. Choose another room."]}
         conflict = find_room_booking_conflict(db, normalized_room, checkin, checkout)
         if conflict:
             return {"success": False, "errors": [room_conflict_error(room_number, conflict)]}
         normalized_phone = normalize_phone(phone)
+        nightly_rate = get_nightly_rate(db, normalized_room)
+        total_amount = nightly_rate * booking_nights(checkin, checkout)
         cursor = db.execute(
             """INSERT INTO customers
-               (full_name, phone, email, room_number, guest_count, checkin, checkout, special_requests)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (full_name, phone, email, room_number, guest_count, checkin, checkout,
+                special_requests, booking_status, nightly_rate, total_amount)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)""",
             (full_name.strip(), normalized_phone, (email or "").strip() or None,
              normalized_room, int(guest_count), checkin.strip(), checkout.strip(),
-             (special_requests or "").strip() or None),
+             (special_requests or "").strip() or None, nightly_rate, total_amount),
         )
         customer = row_to_dict(db.execute(
             "SELECT * FROM customers WHERE id = ?", (cursor.lastrowid,)
@@ -347,7 +418,7 @@ def tool_update_customer(customer_id, updates):
     if "id" in updates or "customer_id" in updates or "_id" in updates:
         return {"success": False, "errors": ["The customer ID can never be changed."]}
 
-    allowed = {"full_name", "phone", "email", "room_number", "guest_count", "checkin", "checkout", "special_requests"}
+    allowed = {"full_name", "phone", "email", "room_number", "guest_count", "checkin", "checkout", "special_requests", "booking_status"}
     unknown = set(updates.keys()) - allowed
     if unknown:
         return {"success": False, "errors": [f"Unknown field(s): {', '.join(unknown)}"]}
@@ -379,6 +450,11 @@ def tool_update_customer(customer_id, updates):
         error = validate_dates(merged["checkin"], merged["checkout"])
         if error:
             errors.append(error)
+    if "booking_status" in updates:
+        if not isinstance(merged["booking_status"], str) or merged["booking_status"].strip().lower() not in BOOKING_STATUSES:
+            errors.append("Booking status must be reserved, checked_in, checked_out, or cancelled.")
+        else:
+            merged["booking_status"] = merged["booking_status"].strip().lower()
     if errors:
         return {"success": False, "errors": errors}
 
@@ -391,6 +467,14 @@ def tool_update_customer(customer_id, updates):
         clean_updates["room_number"] = str(int(clean_updates["room_number"]))
     if "guest_count" in clean_updates:
         clean_updates["guest_count"] = int(clean_updates["guest_count"])
+    if "booking_status" in clean_updates:
+        clean_updates["booking_status"] = clean_updates["booking_status"].strip().lower()
+    if {"room_number", "checkin", "checkout"} & set(clean_updates):
+        with get_db() as db:
+            rate = get_nightly_rate(db, merged["room_number"])
+        nights = booking_nights(merged["checkin"], merged["checkout"])
+        clean_updates["nightly_rate"] = rate
+        clean_updates["total_amount"] = rate * nights
     with get_db() as db:
         db.execute("BEGIN IMMEDIATE")
         if "phone" in clean_updates:
@@ -399,15 +483,18 @@ def tool_update_customer(customer_id, updates):
             )
             if phone_conflict:
                 return {"success": False, "errors": [phone_conflict_error(phone_conflict)]}
-        conflict = find_room_booking_conflict(
-            db,
-            merged["room_number"],
-            merged["checkin"],
-            merged["checkout"],
-            exclude_customer_id=customer_id,
-        )
-        if conflict:
-            return {"success": False, "errors": [room_conflict_error(merged['room_number'], conflict)]}
+        if merged.get("booking_status", "reserved") in {"reserved", "checked_in"}:
+            if room_is_in_maintenance(db, merged["room_number"]):
+                return {"success": False, "errors": [f"Room {merged['room_number']} is marked for maintenance."]}
+            conflict = find_room_booking_conflict(
+                db,
+                merged["room_number"],
+                merged["checkin"],
+                merged["checkout"],
+                exclude_customer_id=customer_id,
+            )
+            if conflict:
+                return {"success": False, "errors": [room_conflict_error(merged['room_number'], conflict)]}
         columns = ", ".join(f"{key} = ?" for key in clean_updates)
         values = list(clean_updates.values()) + [int(customer_id)]
         db.execute(f"UPDATE customers SET {columns} WHERE id = ?", values)
@@ -440,17 +527,49 @@ def tool_list_customers():
     return {"success": True, "customers": customers}
 
 
+def tool_set_room_maintenance(room_number, maintenance):
+    if validate_room(room_number):
+        return {"success": False, "errors": ["Choose a room number from 1 to 500."]}
+    if not isinstance(maintenance, bool):
+        return {"success": False, "errors": ["Maintenance must be true or false."]}
+    room_number = int(str(room_number).strip())
+    with get_db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if maintenance:
+            active_booking = db.execute(
+                """SELECT id FROM customers
+                   WHERE CAST(room_number AS INTEGER) = ?
+                     AND booking_status IN ('reserved', 'checked_in')
+                     AND checkout >= date('now', 'localtime')
+                   LIMIT 1""",
+                (room_number,),
+            ).fetchone()
+            if active_booking:
+                return {
+                    "success": False,
+                    "errors": [f"Room {room_number} has an active or future booking. Cancel or complete that booking before maintenance."],
+                }
+        status = "maintenance" if maintenance else "available"
+        db.execute("UPDATE rooms SET status = ? WHERE room_number = ?", (status, room_number))
+    return {"success": True, "room_number": room_number, "status": status}
+
+
 def get_room_availability(checkin, checkout):
     date_error = validate_dates(checkin, checkout)
     if date_error:
         return {"success": False, "error": date_error}
 
     occupied = {"double": set(), "triple": set(), "six_guest": set()}
+    maintenance = {"double": set(), "triple": set(), "six_guest": set()}
     with get_db() as db:
         bookings = db.execute(
             """SELECT DISTINCT room_number FROM customers
-               WHERE checkin < ? AND checkout > ?""",
+               WHERE booking_status IN ('reserved', 'checked_in')
+                 AND checkin < ? AND checkout > ?""",
             (checkout.strip(), checkin.strip()),
+        ).fetchall()
+        maintenance_rooms = db.execute(
+            "SELECT room_number FROM rooms WHERE status = 'maintenance'"
         ).fetchall()
 
     for booking in bookings:
@@ -465,6 +584,12 @@ def get_room_availability(checkin, checkout):
         elif 300 <= room_number <= 500:
             occupied["six_guest"].add(room_number)
 
+    for room in maintenance_rooms:
+        room_number = int(room["room_number"])
+        category = room_type_for_number(room_number)
+        if category:
+            maintenance[category].add(room_number)
+
     ranges = {"double": range(1, 200), "triple": range(200, 300), "six_guest": range(300, 501)}
     totals = {category: len(room_numbers) for category, room_numbers in ranges.items()}
     return {
@@ -472,14 +597,15 @@ def get_room_availability(checkin, checkout):
         "checkin": checkin,
         "checkout": checkout,
         "available": {
-            category: total - len(occupied[category])
+            category: len(set(room_numbers) - occupied[category] - maintenance[category])
             for category, total in totals.items()
         },
         "totals": totals,
         "rooms": {
             category: {
-                "available": sorted(set(room_numbers) - occupied[category]),
+                "available": sorted(set(room_numbers) - occupied[category] - maintenance[category]),
                 "booked": sorted(occupied[category]),
+                "maintenance": sorted(maintenance[category]),
             }
             for category, room_numbers in ranges.items()
         },
@@ -492,6 +618,7 @@ TOOL_FUNCTIONS = {
     "update_customer": tool_update_customer,
     "delete_customer": tool_delete_customer,
     "list_customers": tool_list_customers,
+    "set_room_maintenance": tool_set_room_maintenance,
 }
 
 # ---------------------------------------------------------------------------
@@ -544,6 +671,7 @@ TOOLS = [
                             "can never be changed. Only include fields that are actually changing. "
                             "Phone numbers must use a 10-digit local format or +94 followed by 9 digits, and be unique across customers. "
                             "If changing room_number or guest_count, the guests must fit the room capacity. "
+                            "booking_status may be reserved, checked_in, checked_out, or cancelled. "
                             "The resulting room and stay dates must not overlap another booking.",
             "parameters": {
                 "type": "object",
@@ -569,6 +697,21 @@ TOOLS = [
                 "type": "object",
                 "properties": {"customer_id": {"type": "integer"}},
                 "required": ["customer_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_room_maintenance",
+            "description": "Mark a room as under maintenance or return it to service. Do not put a room into maintenance if it has an active or future booking.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "room_number": {"type": "integer", "description": "A room number from 1 to 500"},
+                    "maintenance": {"type": "boolean", "description": "true to mark for maintenance; false to return it to service"},
+                },
+                "required": ["room_number", "maintenance"],
             },
         },
     },
@@ -601,11 +744,18 @@ the conversation.
 the staff member to correct it. Do not say something was saved/changed/deleted unless the tool \
 result says success: true.
 - For updates, clearly say what changed afterwards. The customer ID itself can never change.
+- Booking statuses are reserved, checked_in, checked_out, and cancelled. Cancellation preserves the booking record; never describe it as deleted.
+- Before cancelling through chat, ask for a clear yes/no confirmation. The application enforces this confirmation.
+- Room maintenance can be set or cleared with set_room_maintenance. An occupied or future-booked room cannot be marked for maintenance.
+- The hotel has editable demo rates in LKR: double, triple, and six-guest room categories. A booking stores the current nightly rate and total (nightly rate times nights); do not invent a different price. Staff can edit the demo rates in the management panel.
+- Reply in the same language and script the staff member uses, including Sinhala or Sinhala written with Latin letters (Singlish).
 - For deletion: call delete_customer for the requested customer. The application will show \
 the customer and require the staff member's clear yes/no answer before deleting. Do not claim \
 the record was deleted unless the application confirms success.
 - If several customers match a search, list them briefly and ask which one is meant.
 - Keep replies polite, short and professional.
+- For billing questions, report the stored nightly rate and booking total for the requested guest when available. Do not claim that a payment was collected. Staff can also review and export booking history, edit demo rates, and manage room maintenance in the web panel.
+- Reply in the same language and script the staff member uses, including Sinhala or Sinhala written with Latin letters (Singlish).
 - If asked about anything unrelated to customer records (e.g. room pricing, billing, general \
 chit-chat), politely explain that you only handle guest records (add, view, update, delete) and \
 briefly say what you can help with.
@@ -616,7 +766,7 @@ briefly say what you can help with.
 # ---------------------------------------------------------------------------
 
 def run_tool(name, tool_input):
-    global _pending_delete
+    global _pending_delete, _pending_cancel
     func = TOOL_FUNCTIONS.get(name)
     if not func:
         return {"success": False, "errors": [f"Unknown tool: {name}"]}
@@ -633,6 +783,13 @@ def run_tool(name, tool_input):
                 "customer": customer,
                 "message": "Waiting for the staff member's explicit yes or no.",
             }
+        if name == "update_customer" and isinstance(tool_input.get("updates"), dict) and tool_input["updates"].get("booking_status") == "cancelled":
+            customer_id = tool_input.get("customer_id")
+            customer = doc_to_dict_by_id(customer_id)
+            if not customer:
+                return {"success": False, "errors": [f"No customer with ID {customer_id} exists."]}
+            _pending_cancel = customer
+            return {"success": False, "confirmation_required": True, "customer": customer, "message": "Waiting for the staff member's explicit yes or no to cancel this booking."}
         return func(**tool_input)
     except TypeError as e:
         return {"success": False, "errors": [f"Bad arguments for {name}: {e}"]}
@@ -659,7 +816,7 @@ def create_ollama_client():
 
 def process_chat_turn(client, messages, user_text):
     """Run one chat turn and return the text replies for CLI or GUI display."""
-    global _pending_delete
+    global _pending_delete, _pending_cancel
     replies = []
 
     # The application, not the model, enforces the delete confirmation.
@@ -687,6 +844,22 @@ def process_chat_turn(client, messages, user_text):
             ])
             return [reply]
         return ["Please reply yes to delete this customer, or no to cancel."]
+
+    if _pending_cancel is not None:
+        answer = re.sub(r"[^a-z ]", "", user_text.casefold()).strip()
+        customer = _pending_cancel
+        if answer in {"yes", "y", "yes please", "confirm", "confirm cancel", "yes cancel", "yes cancel it"}:
+            _pending_cancel = None
+            result = tool_update_customer(customer["id"], {"booking_status": "cancelled"})
+            reply = (f"Cancelled booking #{customer['id']} for {customer['full_name']}. The booking remains in history." if result.get("success") else "I couldn't cancel that booking: " + "; ".join(result.get("errors", [])))
+            messages.extend([{"role": "user", "content": user_text}, {"role": "assistant", "content": reply}])
+            return [reply]
+        if answer in {"no", "n", "no thanks", "cancel", "do not cancel"}:
+            _pending_cancel = None
+            reply = f"Okay. Booking #{customer['id']} was not cancelled."
+            messages.extend([{"role": "user", "content": user_text}, {"role": "assistant", "content": reply}])
+            return [reply]
+        return ["Please reply yes to cancel this booking, or no to keep it."]
 
     messages.append({"role": "user", "content": user_text})
 
@@ -745,6 +918,10 @@ def process_chat_turn(client, messages, user_text):
                 f"Are you sure you want to delete customer #{customer['id']}, "
                 f"{customer['full_name']} (room {customer['room_number']})? Reply yes or no."
             )
+            return replies
+        if _pending_cancel is not None:
+            customer = _pending_cancel
+            replies.append(f"Do you want to cancel booking #{customer['id']} for {customer['full_name']} (room {customer['room_number']})? The record will stay in history. Reply yes or no.")
             return replies
 
 
