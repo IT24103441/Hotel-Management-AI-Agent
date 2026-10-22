@@ -32,7 +32,8 @@
         <p class="availability-caption">Choose dates to see rooms available</p>
         <div class="availability-dates">
           <label>Check-in<input id="availability-checkin" type="date" aria-label="Availability check-in date"></label>
-          <label>Check-out<input id="availability-checkout" type="date" aria-label="Availability check-out date"></label>
+          <label>Check-out<input id="availability-checkout" type="date"
+              aria-label="Availability check-out date"></label>
         </div>
         <div class="availability-list" id="availability-list" aria-live="polite">
           <div class="availability-status">Loading rooms…</div>
@@ -45,7 +46,6 @@
       <header class="topbar">
         <div class="mobile-brand"><span class="brand-mark small">H</span> Hotel Desk</div>
         <div class="topbar-actions">
-          <a class="theme-toggle admin-link" href="{{ url_for('admin') }}">Admin page</a>
           <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch to dark mode">
             <span aria-hidden="true">☾</span> Dark mode
           </button>
@@ -54,10 +54,14 @@
       </header>
 
       <section class="dashboard" aria-label="Hotel dashboard">
-        <article><span>Rooms free today</span><strong id="dash-available">—</strong><small>of 500 rooms</small></article>
-        <article><span>Active bookings</span><strong id="dash-active">—</strong><small>reserved or checked in</small></article>
-        <article><span>Check-ins today</span><strong id="dash-checkins">—</strong><small>scheduled arrivals</small></article>
-        <article><span>Check-outs today</span><strong id="dash-checkouts">—</strong><small>scheduled departures</small></article>
+        <article><span>Rooms free today</span><strong id="dash-available">—</strong><small>of 500 rooms</small>
+        </article>
+        <article><span>Active bookings</span><strong id="dash-active">—</strong><small>reserved or checked in</small>
+        </article>
+        <article><span>Check-ins today</span><strong id="dash-checkins">—</strong><small>scheduled arrivals</small>
+        </article>
+        <article><span>Check-outs today</span><strong id="dash-checkouts">—</strong><small>scheduled departures</small>
+        </article>
       </section>
 
       <section class="conversation" aria-label="Hotel assistant conversation">
