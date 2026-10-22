@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f7f8">
+  <title>Hotel Desk · Admin</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+  <main class="admin-page">
+    <header class="admin-topbar">
+      <a class="brand admin-brand" href="{{ url_for('home') }}"><span class="brand-mark">H</span><span><span class="brand-name">Hotel Desk</span><span class="brand-caption">Administration</span></span></a>
+      <div class="topbar-actions">
+        <a class="theme-toggle admin-link" href="{{ url_for('home') }}">← Back to assistant</a>
+        <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch to dark mode"><span aria-hidden="true">☾</span> Dark mode</button>
+      </div>
+    </header>
+
+    <section class="admin-content">
+      <div class="admin-title"><div><p class="eyebrow">HOTEL MANAGEMENT</p><h1>Admin dashboard</h1><p>Manage bookings, demo rates, and room maintenance.</p></div><a class="action-button secondary" href="{{ url_for('home') }}">Open front desk assistant</a></div>
+
+      <section class="dashboard admin-dashboard" aria-label="Hotel dashboard">
+        <article><span>Rooms free today</span><strong id="dash-available">—</strong><small>of 500 rooms</small></article>
+        <article><span>Active bookings</span><strong id="dash-active">—</strong><small>reserved or checked in</small></article>
+        <article><span>Check-ins today</span><strong id="dash-checkins">—</strong><small>scheduled arrivals</small></article>
+        <article><span>Check-outs today</span><strong id="dash-checkouts">—</strong><small>scheduled departures</small></article>
+      </section>
+
+      <section class="admin-section">
+        <div class="section-heading"><div><h2>Bookings</h2><p>Review stays, update booking status, or export the filtered list.</p></div></div>
+        <div class="manage-tools">
+          <label>Booking status<select id="history-status"><option value="">All statuses</option><option value="reserved">Reserved</option><option value="checked_in">Checked in</option><option value="checked_out">Checked out</option><option value="cancelled">Cancelled</option></select></label>
+          <label>From date<input id="history-from" type="date"></label>
+          <label>To date<input id="history-to" type="date"></label>
+          <button class="action-button" id="history-refresh" type="button">Refresh list</button>
+          <a class="action-button secondary" id="csv-export" href="/api/bookings.csv">Export CSV</a>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>ID / guest</th><th>Room / guests</th><th>Stay</th><th>Booking status</th><th>Nightly rate</th><th>Total</th><th>Save</th></tr></thead><tbody id="booking-rows"><tr><td colspan="7">Loading bookings…</td></tr></tbody></table></div>
+      </section>
+
+      <div class="settings-grid admin-settings">
+        <section class="settings-section"><h2>Editable demo nightly rates · LKR</h2><p>These sample rates are saved with new bookings. Existing booking totals stay as originally recorded.</p><div class="rate-fields">
+          <label>Double (rooms 1–199)<input id="rate-double" type="number" min="0" step="1"></label>
+          <label>Triple (rooms 200–299)<input id="rate-triple" type="number" min="0" step="1"></label>
+          <label>Up to 6 guests (rooms 300–500)<input id="rate-six_guest" type="number" min="0" step="1"></label>
+        </div><button class="action-button" id="rates-save" type="button">Save rates</button><span class="inline-feedback" id="rates-feedback"></span></section>
+        <section class="settings-section"><h2>Room maintenance</h2><p>Rooms marked for maintenance are removed from availability until returned to service.</p><div class="maintenance-controls"><label>Room number<input id="maintenance-room" type="number" min="1" max="500" placeholder="1–500"></label><button class="action-button" id="maintenance-toggle" type="button" disabled>Mark for maintenance</button></div><span class="inline-feedback" id="maintenance-feedback"></span></section>
+      </div>
+    </section>
+  </main>
+  <script src="{{ url_for('static', filename='admin.js') }}"></script>
+</body>
+
+</html>
